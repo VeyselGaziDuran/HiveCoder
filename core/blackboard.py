@@ -273,7 +273,14 @@ class Blackboard:
 
     # ------------------------------------------------------------------ storage
     def _empty(self, workspace: Optional[str] = None) -> dict[str, Any]:
-        return {"workspace": workspace, "updated_at": None, "files": {}, "notes": []}
+        return {
+            "workspace": workspace,
+            "updated_at": None,
+            "files": {},
+            "notes": [],
+            "verified_symbols": {},
+            "runtime_context": "",
+        }
 
     def _load(self) -> dict[str, Any]:
         if self.json_path.exists():
@@ -308,6 +315,33 @@ class Blackboard:
     @property
     def notes(self) -> list[dict[str, Any]]:
         return self.data["notes"]
+
+    def set_runtime_context(self, context_markdown: str) -> None:
+        """Store runtime version and package radar constraints on the Blackboard."""
+        self.data["runtime_context"] = context_markdown.strip()
+        self.save()
+
+    def lock_verified_symbols(self, filepaths: list[str]) -> None:
+        """Mark top-level symbols in ``filepaths`` as verified so later tasks preserve them."""
+        ws = self._require_workspace()
+        verified_map: dict[str, list[str]] = self.data.setdefault("verified_symbols", {})
+        for filepath in filepaths:
+            rel = normalize_relpath(ws, filepath)
+            record = self.files.get(rel)
+            if not record or record.get("kind") != "python":
+                continue
+            own_names = sorted(
+                n for n in (defined_names(record) - self._imported_names(record)) if not n.startswith("_")
+            )
+            existing = set(verified_map.get(rel, []))
+            verified_map[rel] = sorted(existing | set(own_names))
+        self.save()
+
+    def get_verified_symbols(self, filepath: str) -> set[str]:
+        ws = self._require_workspace()
+        rel = normalize_relpath(ws, filepath)
+        verified_map: dict[str, list[str]] = self.data.get("verified_symbols", {})
+        return set(verified_map.get(rel, []))
 
     def bind_workspace(self, workspace: str | Path, reset_if_changed: bool = True) -> bool:
         """Attach the blackboard to a workspace. Returns True if memory was reset."""
@@ -508,6 +542,10 @@ class Blackboard:
             out.append("(no relay notes yet)")
         for note in notes:
             out.append(f"- [{note['agent']} -> {note['file']}] {note['note']}")
+        runtime_ctx = str(self.data.get("runtime_context") or "").strip()
+        if runtime_ctx:
+            out.append("")
+            out.append(runtime_ctx)
         return "\n".join(out)
 
     @staticmethod

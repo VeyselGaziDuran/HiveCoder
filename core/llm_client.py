@@ -408,18 +408,19 @@ class LLMClient:
     def _gen(self) -> dict[str, Any]:
         return self.config.get("generation", {})
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(self, system: str, user: str, temperature: Optional[float] = None) -> str:
         retries = max(1, int(self._gen.get("max_retries", 3)))
+        temp = float(self._gen.get("temperature", 0.2) if temperature is None else temperature)
         last_error: Optional[Exception] = None
         for attempt in range(retries):
             started = time.time()
             try:
                 if self.provider == "ollama":
-                    text = self._ollama(system, user)
+                    text = self._ollama(system, user, temp)
                 elif self.config.get("api", {}).get("style", "openai") == "anthropic":
-                    text = self._anthropic(system, user)
+                    text = self._anthropic(system, user, temp)
                 else:
-                    text = self._openai(system, user)
+                    text = self._openai(system, user, temp)
                 self.stats.calls += 1
                 self.stats.prompt_chars += len(system) + len(user)
                 self.stats.response_chars += len(text)
@@ -443,14 +444,14 @@ class LLMClient:
             raise LLMError(f"HTTP {resp.status_code} from {url}: {resp.text[:300]}")
         return resp.json()
 
-    def _ollama(self, system: str, user: str) -> str:
+    def _ollama(self, system: str, user: str, temperature: float) -> str:
         cfg = self.config.get("ollama", {})
         payload: dict[str, Any] = {
             "model": self.model,
             "stream": False,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "options": {
-                "temperature": float(self._gen.get("temperature", 0.2)),
+                "temperature": temperature,
                 "num_ctx": int(cfg.get("num_ctx", 8192)),
             },
         }
@@ -466,11 +467,11 @@ class LLMClient:
             raise LLMError(f"API key missing: export {cfg.get('api_key_env', 'HIVE_API_KEY')}=...")
         return key
 
-    def _openai(self, system: str, user: str) -> str:
+    def _openai(self, system: str, user: str, temperature: float) -> str:
         cfg = self.config.get("api", {})
         payload = {
             "model": self.model,
-            "temperature": float(self._gen.get("temperature", 0.2)),
+            "temperature": temperature,
             "max_tokens": int(cfg.get("max_tokens", 4096)),
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         }
@@ -478,12 +479,12 @@ class LLMClient:
         data = self._post(f"{str(cfg.get('base_url')).rstrip('/')}/chat/completions", payload, headers)
         return str(data["choices"][0]["message"]["content"] or "")
 
-    def _anthropic(self, system: str, user: str) -> str:
+    def _anthropic(self, system: str, user: str, temperature: float) -> str:
         cfg = self.config.get("api", {})
         payload = {
             "model": self.model,
             "max_tokens": int(cfg.get("max_tokens", 4096)),
-            "temperature": float(self._gen.get("temperature", 0.2)),
+            "temperature": temperature,
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
