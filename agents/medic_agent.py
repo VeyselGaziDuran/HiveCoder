@@ -91,7 +91,7 @@ class MedicAgent(BaseAgent):
         naive_chars = self.context_builder.naive_chars() + len(spec)
 
         line_window = ASTPatcher.extract_traceback_window(current_code, error_output)
-        live_sigs = format_probe_summary(SignatureProbe().inspect_imports_in_source(current_code))
+        live_sigs = format_probe_summary(SignatureProbe().inspect_traceback(current_code, error_output))
         missing_pkg_alert = self._detect_missing_package_alert(error_output)
 
         extra_sections: list[str] = []

@@ -10,13 +10,33 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import re
+import sys
 from typing import Iterable
+
+_EXCLUDED_STDLIB: frozenset[str] = frozenset(
+    {
+        "antigravity",
+        "this",
+        "idlelib",
+        "tkinter",
+        "turtle",
+        "turtledemo",
+        "webbrowser",
+        "curses",
+        "ensurepip",
+        "venv",
+        "multiprocessing",
+        "dbm",
+    }
+)
+_STDLIB_NAMES: frozenset[str] = frozenset(getattr(sys, "stdlib_module_names", ())) - _EXCLUDED_STDLIB
 
 
 class SignatureProbe:
     """Extracts live function and class constructor signatures from importable modules."""
 
-    SAFE_MODULES: frozenset[str] = frozenset(
+    SAFE_MODULES: frozenset[str] = _STDLIB_NAMES | frozenset(
         {
             "json",
             "sqlite3",
@@ -35,6 +55,12 @@ class SignatureProbe:
             "pytest",
             "requests",
             "rich",
+            "fastapi",
+            "flask",
+            "sqlalchemy",
+            "httpx",
+            "click",
+            "typer",
         }
     )
 
@@ -82,6 +108,21 @@ class SignatureProbe:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     collected.extend(self.inspect_symbol(alias.name)[:4])
+        seen: set[str] = set()
+        unique: list[str] = []
+        for item in collected:
+            if item not in seen:
+                seen.add(item)
+                unique.append(item)
+        return unique[:15]
+
+    def inspect_traceback(self, source: str, error_output: str) -> list[str]:
+        """Combine source import signatures with symbols referenced in ``error_output``."""
+        collected = list(self.inspect_imports_in_source(source))
+        for sym, mod in re.findall(r"cannot import name ['\"](\w+)['\"] from ['\"]([A-Za-z0-9_.]+)['\"]", error_output):
+            collected.extend(self.inspect_symbol(mod)[:8])
+        for mod, _attr in re.findall(r"module ['\"]([A-Za-z0-9_.]+)['\"] has no attribute ['\"](\w+)['\"]", error_output):
+            collected.extend(self.inspect_symbol(mod)[:8])
         seen: set[str] = set()
         unique: list[str] = []
         for item in collected:

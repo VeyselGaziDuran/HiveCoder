@@ -76,8 +76,8 @@ class ThermalSensor:
         self.latest_chars_per_sec: Optional[float] = None
 
     def record_throughput(self, elapsed_seconds: float, response_chars: int) -> None:
-        """Record model generation speed to detect thermal throttling slowdowns."""
-        if elapsed_seconds <= 0.05 or response_chars <= 20:
+        """Record model generation speed on substantial completions (>= 200 chars, >= 0.3s)."""
+        if elapsed_seconds < 0.3 or response_chars < 200:
             return
         speed = float(response_chars) / float(elapsed_seconds)
         self.latest_chars_per_sec = speed
@@ -159,7 +159,11 @@ class ThermalSensor:
                 recommended_cooldown_seconds=self.moderate_cooldown_seconds,
                 reason=f"inference speed dropped to {speed_ratio:.0%} of baseline",
             )
-        if load_ratio >= self.heavy_load_ratio:
+        if (
+            load_ratio >= self.heavy_load_ratio
+            and temp_c is None
+            and (platform.system() != "Darwin" or os_level != "nominal")
+        ):
             return ThermalReading(
                 level="moderate",
                 temp_celsius=temp_c,

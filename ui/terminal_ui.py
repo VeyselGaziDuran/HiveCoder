@@ -25,9 +25,14 @@ EVENT_STYLES: dict[str, tuple[str, str]] = {
     "relay_note": ("BLACKBOARD", "bold yellow"),
     "inspection_approved": ("INSPECTOR", "bold green"),
     "inspection_rejected": ("INSPECTOR", "bold red"),
+    "inspection_override": ("INSPECTOR", "bold bright_green"),
     "validation_failed": ("VALIDATOR", "bold red"),
     "infirmary": ("INFIRMARY", "bold bright_red"),
     "infirmary_healed": ("MEDIC", "bold bright_green"),
+    "loop_breaker": ("LOOP-BREAKER", "bold yellow"),
+    "memory_gc": ("MEMORY-GC", "bold cyan"),
+    "retry": ("RETRY", "bold yellow"),
+    "paused": ("PAUSED", "bold yellow"),
     "micro_done": ("VERIFIED", "bold green"),
     "thermal": ("THERMAL", "bold cyan"),
     "rollback": ("GIT-GUARD", "bold yellow"),
@@ -69,7 +74,7 @@ class TerminalUI:
         grid.add_column(justify="left")
         grid.add_column(justify="right")
         grid.add_row(
-            "[bold bright_cyan]HIVECODER v1.0[/] — Stateless Micro-Agent Orchestrator",
+            "[bold bright_cyan]HIVECODER v2.0[/] — Stateless Micro-Agent Orchestrator",
             health_badge,
         )
         grid.add_row(
@@ -81,7 +86,7 @@ class TerminalUI:
         self.console.print(Panel(grid, box=ROUNDED, border_style="bright_cyan"))
         self.console.print(
             "[dim]Slash commands:[/] [bold]/run <goal>[/] | [bold]/resume[/] | [bold]/blackboard[/] | "
-            "[bold]/thermal <eco|balanced|turbo> [min][/] | [bold]/provider <ollama|api>[/] | "
+            "[bold]/thermal <adaptive|eco|balanced|turbo> [min][/] | [bold]/provider <ollama|api>[/] | "
             "[bold]/model <name>[/] | [bold]/status[/] | [bold]/clean[/] | [bold]/self-test[/] | [bold]/exit[/]\n"
         )
 
@@ -312,7 +317,7 @@ class TerminalUI:
         table.add_row("/run <goal>", "Start a new autonomous software engineering task")
         table.add_row("/resume", "Resume an interrupted task from state.json & blackboard.json")
         table.add_row("/blackboard", "Inspect the live AST project map and agent Relay Notes")
-        table.add_row("/thermal <eco|balanced|turbo> [min]", "Switch thermal profile and optional cooldown minutes")
+        table.add_row("/thermal <adaptive|eco|balanced|turbo> [min]", "Switch thermal profile and optional cooldown minutes")
         table.add_row("/provider <ollama|api>", "Switch between local Ollama and cloud API provider")
         table.add_row("/model <model_name>", "Change active model (e.g. qwen3:8b, gpt-4o-mini)")
         table.add_row("/workspace [path]", "Show or switch the active target project workspace")
