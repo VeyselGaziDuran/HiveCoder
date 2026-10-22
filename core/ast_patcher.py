@@ -18,6 +18,8 @@ from typing import Iterable, Optional
 def _assigned_target_names(target: ast.AST) -> list[str]:
     if isinstance(target, ast.Name):
         return [target.id]
+    if isinstance(target, ast.Starred):
+        return _assigned_target_names(target.value)
     if isinstance(target, (ast.Tuple, ast.List)):
         names: list[str] = []
         for elt in target.elts:

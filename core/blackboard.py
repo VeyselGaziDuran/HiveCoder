@@ -108,6 +108,8 @@ def format_function_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> s
 def _assigned_names(target: ast.AST) -> list[str]:
     if isinstance(target, ast.Name):
         return [target.id]
+    if isinstance(target, ast.Starred):
+        return _assigned_names(target.value)
     if isinstance(target, (ast.Tuple, ast.List)):
         names: list[str] = []
         for elt in target.elts:
@@ -144,6 +146,8 @@ def _iter_module_statements(body: list[ast.stmt]) -> list[ast.stmt]:
                 out.extend(_iter_module_statements(handler.body))
             out.extend(_iter_module_statements(node.orelse))
             out.extend(_iter_module_statements(node.finalbody))
+        elif isinstance(node, ast.With):
+            out.extend(_iter_module_statements(node.body))
         else:
             out.append(node)
     return out
@@ -737,17 +741,32 @@ class Blackboard:
         package_parts = list(PurePosixPath(rel).parent.parts)
 
         guarded_imports: set[int] = set()
+        guarded_attrs: set[int] = set()
         for tnode in ast.walk(tree):
             if isinstance(tnode, ast.Try):
                 catches_import_err = False
+                catches_attr_err = False
                 for h in tnode.handlers:
                     if h.type is None:
                         continue
                     htype = _unparse(h.type)
                     if any(err in htype for err in ("ImportError", "ModuleNotFoundError")):
                         catches_import_err = True
-                        break
+                    if "AttributeError" in htype:
+                        catches_attr_err = True
                 if catches_import_err:
+                    for sub in tnode.body:
+                        for child in ast.walk(sub):
+                            if isinstance(child, (ast.Import, ast.ImportFrom)):
+                                guarded_imports.add(id(child))
+                if catches_attr_err:
+                    for sub in tnode.body:
+                        for child in ast.walk(sub):
+                            if isinstance(child, ast.Attribute):
+                                guarded_attrs.add(id(child))
+            elif isinstance(tnode, ast.With):
+                ctx_str = " ".join(_unparse(item.context_expr) for item in tnode.items)
+                if "suppress" in ctx_str and any(e in ctx_str for e in ("ImportError", "ModuleNotFoundError")):
                     for sub in tnode.body:
                         for child in ast.walk(sub):
                             if isinstance(child, (ast.Import, ast.ImportFrom)):
@@ -808,8 +827,16 @@ class Blackboard:
                     if self._module_record(alias.name):
                         module_aliases[alias.asname or alias.name] = alias.name
 
+        module_dunders = {
+            "__name__", "__doc__", "__file__", "__package__", "__loader__",
+            "__spec__", "__path__", "__dict__", "__cached__", "__all__", "__builtins__", "__annotations__",
+        }
         for node in ast.walk(tree):
+            if id(node) in guarded_attrs:
+                continue
             if isinstance(node, ast.Attribute) and isinstance(node.value, (ast.Name, ast.Attribute)):
+                if node.attr in module_dunders:
+                    continue
                 expr_key = node.value.id if isinstance(node.value, ast.Name) else _unparse(node.value)
                 module = module_aliases.get(expr_key)
                 if not module:

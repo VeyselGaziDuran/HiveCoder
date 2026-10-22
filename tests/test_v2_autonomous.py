@@ -1132,6 +1132,46 @@ def test_cycle_16_chained_submodule_attribute_validation_and_narrow_import_guard
     assert "nonexistent_sym" in issues_generic[0].message
 
 
+def test_cycle_17_module_dunder_attrs_starred_unpacking_and_with_suppress(tmp_path: Path) -> None:
+    """Verify module dunders, starred unpacking, with suppress(ImportError), and guarded AttributeError pass."""
+    ws = tmp_path / "cycle17_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle17_mem", workspace=ws)
+
+    # 1. Starred unpacking in Blackboard and ASTPatcher
+    src_starred = "HEAD, *REST_ITEMS = [10, 20, 30]\n"
+    (ws / "mod.py").write_text(src_starred, encoding="utf-8")
+    bb.update_file_record("mod.py", agent_note="Starred constants")
+    bb.lock_verified_symbols(["mod.py"])
+    assert "REST_ITEMS" in bb.get_verified_symbols("mod.py")
+
+    merged = ASTPatcher.merge_preserving_symbols(
+        src_starred,
+        "def get_rest() -> list[int]:\n    return REST_ITEMS\n",
+        protected_symbols=bb.get_verified_symbols("mod.py"),
+    )
+    ns: dict[str, Any] = {}
+    exec(compile(merged, "<cycle17_merged>", "exec"), ns)
+    assert ns["get_rest"]() == [20, 30]
+
+    # 2. Module dunder access (mod.__name__, mod.__file__), with suppress(ImportError), and try/except AttributeError
+    (ws / "checker.py").write_text(
+        "from contextlib import suppress\n"
+        "import mod\n\n"
+        "with suppress(ImportError):\n"
+        "    from mod import optional_plugin\n\n"
+        "def inspect_mod() -> str:\n"
+        "    try:\n"
+        "        return str(mod.optional_attr)\n"
+        "    except AttributeError:\n"
+        "        return mod.__name__\n",
+        encoding="utf-8",
+    )
+    bb.scan_workspace()
+    assert bb.check_import_consistency("checker.py") == []
+
+
+
 
 
 
