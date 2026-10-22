@@ -1410,6 +1410,37 @@ def test_cycle_22_clean_path_prefixes_and_existing_target_alignment(tmp_path: Pa
     assert "def updated_fn" in merged_text
 
 
+def test_cycle_23_backtick_pseudo_root_relpath_and_uncreated_target_protection(tmp_path: Path) -> None:
+    """Verify normalize_relpath handles backtick-wrapped '/pkg/mod.py' and uncreated default_target is not hijacked."""
+    from agents.coder_agent import CoderAgent
+    from core.blackboard import UnsafePathError, normalize_relpath
+    from core.context_builder import ContextBuilder
+    from core.llm_client import parse_nano_tags
+    import pytest
+
+    ws = tmp_path / "cycle23_ws"
+    ws.mkdir()
+    assert normalize_relpath(ws, "`/pkg/sub/mod.py`") == "pkg/sub/mod.py"
+    assert normalize_relpath(ws, "target_file: 'src/app.py'") == "src/app.py"
+    with pytest.raises(UnsafePathError):
+        normalize_relpath(ws, "`/etc/passwd`")
+
+    # When step-1 already created 'app.py' and step-2 targets uncreated 'utils.py', a single-file response naming 'app.py' writes 'utils.py'
+    (ws / "app.py").write_text("def main() -> int:\n    return 1\n", encoding="utf-8")
+    bb = Blackboard(tmp_path / "cycle23_mem", workspace=ws)
+    ctx = ContextBuilder(bb, ws)
+    coder = CoderAgent(LLMClient({"provider": "ollama"}), bb, ctx, ws)
+    parsed = parse_nano_tags(
+        "<<<FILE_PATH>>>\napp.py\n<<<END_FILE_PATH>>>\n"
+        "<<<CODE>>>\ndef helper() -> int:\n    return 2\n<<<END_CODE>>>\n"
+    )
+    written, _ = coder._materialize_nano_response(parsed, default_target="utils.py", task_id="step-2")
+    assert written == ["utils.py"]
+    assert (ws / "utils.py").is_file()
+    assert "def main" in (ws / "app.py").read_text(encoding="utf-8")
+
+
+
 
 
 

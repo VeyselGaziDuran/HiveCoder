@@ -58,9 +58,24 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+_SYSTEM_ROOT_DIRS: frozenset[str] = frozenset(
+    {
+        "etc", "usr", "var", "tmp", "bin", "sbin", "dev", "proc",
+        "sys", "root", "Users", "home", "private", "Library", "System",
+        "Windows", "opt", "Volumes",
+    }
+)
+
+
 def normalize_relpath(workspace: str | Path, path: str) -> str:
     """Turn an agent-supplied path into a safe POSIX path relative to ``workspace``."""
-    cleaned = path.strip().strip("`'\"").strip()
+    cleaned = path.strip().strip("`'\"*").strip()
+    cleaned = re.sub(
+        r"^(?:file_?path|target_?file|file_?name|path|file)\s*:\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip().strip("`'\"*").strip()
     cleaned = cleaned.replace("\\", "/")
     if not cleaned:
         raise UnsafePathError("Empty file path")
@@ -70,7 +85,12 @@ def normalize_relpath(workspace: str | Path, path: str) -> str:
         try:
             cleaned = candidate.resolve().relative_to(ws).as_posix()
         except ValueError as exc:
-            raise UnsafePathError(f"Absolute path outside workspace: {path}") from exc
+            stripped_abs = cleaned.lstrip("/")
+            first_part = PurePosixPath(stripped_abs).parts[0] if stripped_abs else ""
+            if first_part and first_part not in _SYSTEM_ROOT_DIRS and ".." not in PurePosixPath(stripped_abs).parts:
+                cleaned = stripped_abs
+            else:
+                raise UnsafePathError(f"Absolute path outside workspace: {path}") from exc
     while cleaned.startswith("./"):
         cleaned = cleaned[2:]
     parts = PurePosixPath(cleaned).parts
