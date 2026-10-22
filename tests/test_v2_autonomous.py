@@ -1339,5 +1339,39 @@ def test_cycle_20_triple_quote_braces_empty_pytest_suite_and_module_stem_toposor
     assert plan[3].target_file == "tests/test_storage.py"
 
 
+def test_cycle_21_plan_truncation_preserves_test_and_signature_probe_class_methods(tmp_path: Path) -> None:
+    """Verify max_micro_tasks truncation keeps test task and SignatureProbe extracts class methods."""
+    from agents.architect_agent import ArchitectAgent
+    from core.context_builder import ContextBuilder
+
+    ws = tmp_path / "cycle21_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle21_mem", workspace=ws)
+    ctx = ContextBuilder(bb, ws)
+    arch = ArchitectAgent(LLMClient({"provider": "ollama"}), bb, ctx, ws, max_micro_tasks=2)
+
+    # Plan has 3 items (2 code + 1 test); max_micro_tasks=2 must still keep a test task at the end
+    raw_plan = """
+    {
+      "micro_tasks": [
+        {"id": "s1", "title": "Core", "target_file": "core_mod.py", "kind": "code", "description": "Core logic"},
+        {"id": "s2", "title": "Extra", "target_file": "extra_mod.py", "kind": "code", "description": "Extra logic"},
+        {"id": "s3", "title": "Tests", "target_file": "tests/test_core_mod.py", "kind": "test", "description": "Pytest"}
+      ]
+    }
+    """
+    plan = arch.parse_plan(raw_plan)
+    assert len(plan) == 2
+    assert plan[-1].kind == "test"
+    assert plan[-1].target_file == "tests/test_core_mod.py"
+
+    # SignatureProbe extracts class methods when importing a class (e.g. from collections import Counter)
+    probe = SignatureProbe()
+    sigs = probe.inspect_symbol("collections", "Counter")
+    assert any("collections.Counter.most_common" in s for s in sigs)
+    assert probe.inspect_symbol("tkinter.ttk", "Button") == []
+
+
+
 
 

@@ -66,7 +66,10 @@ class SignatureProbe:
 
     def inspect_symbol(self, module_name: str, symbol_name: str = "") -> list[str]:
         """Return formatted signature strings for ``module_name`` (or ``module_name.symbol_name``)."""
-        if module_name not in self.SAFE_MODULES and module_name.split(".")[0] not in self.SAFE_MODULES:
+        root_mod = module_name.split(".")[0]
+        if root_mod in _EXCLUDED_STDLIB:
+            return []
+        if module_name not in self.SAFE_MODULES and root_mod not in self.SAFE_MODULES:
             return []
         try:
             mod = importlib.import_module(module_name)
@@ -79,8 +82,24 @@ class SignatureProbe:
                 return self.inspect_symbol(f"{module_name}.{symbol_name}")[:4]
             if inspect.ismodule(target):
                 return self.inspect_symbol(f"{module_name}.{symbol_name}")[:4]
+            out: list[str] = []
             sig = self._format_callable(f"{module_name}.{symbol_name}", target)
-            return [sig] if sig else []
+            if sig:
+                out.append(sig)
+            if inspect.isclass(target):
+                own_attrs = [k for k in sorted(getattr(target, "__dict__", {})) if not k.startswith("_")]
+                inherited_attrs = [
+                    k for k in sorted(dir(target)) if not k.startswith("_") and k not in own_attrs
+                ]
+                for attr in (*own_attrs, *inherited_attrs):
+                    member = getattr(target, attr, None)
+                    if callable(member):
+                        msig = self._format_callable(f"{module_name}.{symbol_name}.{attr}", member)
+                        if msig:
+                            out.append(msig)
+                    if len(out) >= 6:
+                        break
+            return out
 
         results: list[str] = []
         for attr in sorted(dir(mod)):

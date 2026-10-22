@@ -362,7 +362,7 @@ class HiveOrchestrator:
 
                     self.state_machine.transition(Phase.INSPECTING, f"inspecting {mt.id}")
                     verdict = inspector.inspect(mt, agent_result.files_written)
-                    if inspector.enable_llm_review:
+                    if inspector.enable_llm_review and verdict.deterministic_passed:
                         state.metrics.llm_calls += 1
 
                     if not verdict.approved and verdict.deterministic_passed and validator.discover_tests():
@@ -570,8 +570,8 @@ class HiveOrchestrator:
             )
 
             self.state_machine.transition(Phase.INSPECTING, f"re-inspecting {mt.id} after medic")
-            verdict = inspector.inspect(mt, med_result.files_written)
-            if inspector.enable_llm_review:
+            verdict = inspector.inspect(mt, mt.files_written)
+            if inspector.enable_llm_review and verdict.deterministic_passed:
                 state.metrics.llm_calls += 1
 
             if not verdict.approved and verdict.deterministic_passed and validator.discover_tests():

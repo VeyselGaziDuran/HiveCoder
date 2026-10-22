@@ -111,7 +111,7 @@ class ArchitectAgent(BaseAgent):
 
         tasks: list[MicroTask] = []
         seen_ids: set[str] = set()
-        for idx, item in enumerate(items[: self.max_micro_tasks], start=1):
+        for idx, item in enumerate(items, start=1):
             if not isinstance(item, dict):
                 continue
             raw_target = str(
@@ -166,11 +166,22 @@ class ArchitectAgent(BaseAgent):
 
         # Ensure implementation tasks execute in dependency order before test tasks
         tasks = self._topological_sort_tasks(tasks)
+        if len(tasks) > self.max_micro_tasks:
+            code_part = [t for t in tasks if t.kind != "test"]
+            test_part = [t for t in tasks if t.kind == "test"]
+            if test_part and self.max_micro_tasks >= 2:
+                keep_tests = test_part[:1]
+                tasks = code_part[: self.max_micro_tasks - len(keep_tests)] + keep_tests
+            else:
+                tasks = tasks[: self.max_micro_tasks]
 
         # Auto-inject a pytest verification task if Python modules exist without any test micro-task
         has_test = any(mt.kind == "test" for mt in tasks)
         py_code_tasks = [mt for mt in tasks if mt.kind == "code" and mt.target_file.endswith(".py")]
-        if not has_test and py_code_tasks and len(tasks) < self.max_micro_tasks:
+        if not has_test and py_code_tasks and self.max_micro_tasks >= 2:
+            if len(tasks) >= self.max_micro_tasks:
+                tasks = tasks[: self.max_micro_tasks - 1]
+                py_code_tasks = [mt for mt in tasks if mt.kind == "code" and mt.target_file.endswith(".py")]
             non_init_stems = [
                 Path(mt.target_file).stem
                 for mt in py_code_tasks
