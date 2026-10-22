@@ -62,19 +62,32 @@ class ArchitectAgent(BaseAgent):
         super().__init__(llm, blackboard, context_builder, workspace)
         self.max_micro_tasks = max_micro_tasks
 
-    def plan(self, goal: str) -> list[MicroTask]:
-        """Decompose ``goal`` into validated :class:`MicroTask` items."""
+    def plan(self, goal: str, max_retries: int = 2) -> list[MicroTask]:
+        """Decompose ``goal`` into validated :class:`MicroTask` items with parse retry."""
         memory = self.blackboard.get_compact_memory(max_notes=8)
-        user_prompt = (
+        base_prompt = (
             f"# PROJECT GOAL\n{goal.strip()}\n\n"
             f"{memory}\n\n"
             f"Produce at most {self.max_micro_tasks} atomic micro-tasks in JSON format."
         )
-        raw, _elapsed = self._invoke_isolated(self.system_prompt, user_prompt)
-        return self.parse_plan(raw, goal=goal)
+        last_error: Exception | None = None
+        prompt = base_prompt
+        for attempt in range(max_retries + 1):
+            raw, _elapsed = self._invoke_isolated(self.system_prompt, prompt)
+            try:
+                return self.parse_plan(raw, goal=goal)
+            except ValueError as exc:
+                last_error = exc
+                prompt = (
+                    f"{base_prompt}\n\n"
+                    f"# PREVIOUS PLAN PARSE ERROR (Attempt {attempt + 1})\n"
+                    f"{exc}\n"
+                    "Return ONLY a valid JSON object containing a 'micro_tasks' array."
+                )
+        raise ValueError(str(last_error or "ArchitectAgent failed to produce a valid plan"))
 
     def parse_plan(self, raw: str, goal: str = "") -> list[MicroTask]:
-        """Parse and sanitize the JSON plan produced by the LLM."""
+        """Parse, deduplicate, order, and sanitize the JSON plan produced by the LLM."""
         try:
             payload = extract_json(raw)
         except LLMParseError as exc:
@@ -127,6 +140,9 @@ class ArchitectAgent(BaseAgent):
             else:
                 acceptance = []
 
+            if tasks and tasks[-1].target_file == target_file and tasks[-1].title.lower() == title.lower():
+                continue
+
             tasks.append(
                 MicroTask(
                     id=raw_id,
@@ -140,4 +156,31 @@ class ArchitectAgent(BaseAgent):
 
         if not tasks:
             raise ValueError("ArchitectAgent produced an empty plan")
+
+        # Ensure implementation tasks execute before test tasks (stable sort preserves internal order)
+        tasks.sort(key=lambda mt: 1 if mt.kind == "test" else 0)
+
+        # Auto-inject a pytest verification task if Python modules exist without any test micro-task
+        has_test = any(mt.kind == "test" for mt in tasks)
+        py_code_tasks = [mt for mt in tasks if mt.kind == "code" and mt.target_file.endswith(".py")]
+        if not has_test and py_code_tasks and len(tasks) < self.max_micro_tasks:
+            primary_stem = Path(py_code_tasks[0].target_file).stem
+            test_target = f"tests/test_{primary_stem}.py"
+            auto_id = f"step-{len(tasks) + 1}"
+            while auto_id in seen_ids:
+                auto_id += "-test"
+            tasks.append(
+                MicroTask(
+                    id=auto_id,
+                    title=f"Write pytest unit tests in {test_target}",
+                    description=(
+                        "Write deterministic pytest unit tests covering the public functions "
+                        f"and classes implemented in {', '.join(t.target_file for t in py_code_tasks)}."
+                    ),
+                    target_file=test_target,
+                    kind="test",
+                    acceptance=["All pytest assertions pass"],
+                )
+            )
+
         return tasks

@@ -104,9 +104,21 @@ class BaseAgent:
             target_display = parsed.files[0].path or default_target
             relay_note = f"{self.role} updated {target_display}."
 
+        default_norm = normalize_relpath(self.workspace, default_target)
         for idx, block in enumerate(parsed.files):
-            raw_path = block.path or default_target
-            rel_path = normalize_relpath(self.workspace, raw_path)
+            raw_path = block.path or default_norm
+            try:
+                rel_path = normalize_relpath(self.workspace, raw_path)
+            except ValueError:
+                rel_path = default_norm
+            if len(parsed.files) == 1 and rel_path != default_norm:
+                same_basename = Path(rel_path).name == Path(default_norm).name
+                neither_exists = (
+                    not (self.workspace / default_norm).exists()
+                    and not (self.workspace / rel_path).exists()
+                )
+                if same_basename or neither_exists:
+                    rel_path = default_norm
             abs_path = self.workspace / rel_path
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             final_code = block.code
