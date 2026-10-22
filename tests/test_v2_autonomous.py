@@ -1171,16 +1171,46 @@ def test_cycle_17_module_dunder_attrs_starred_unpacking_and_with_suppress(tmp_pa
     assert bb.check_import_consistency("checker.py") == []
 
 
+def test_cycle_18_with_suppress_import_preservation_and_aliased_submodule_check(tmp_path: Path) -> None:
+    """Verify ASTPatcher preserves with-suppress imports and Blackboard validates aliased submodule attributes."""
+    old_src = (
+        "from contextlib import suppress\n"
+        "with suppress(ImportError):\n"
+        "    import json as json_engine\n\n"
+        "def parse_payload(raw: str) -> dict:\n"
+        "    return json_engine.loads(raw)\n"
+    )
+    new_src = (
+        "def health_check() -> bool:\n"
+        "    return True\n"
+    )
+    merged = ASTPatcher.merge_preserving_symbols(old_src, new_src, protected_symbols={"parse_payload"})
+    ns: dict[str, Any] = {}
+    exec(compile(merged, "<cycle18_merged>", "exec"), ns)
+    assert ns["parse_payload"]('{"ok": 1}') == {"ok": 1}
+    assert ns["health_check"]() is True
 
-
-
-
-
-
-
-
-
-
-
+    ws = tmp_path / "cycle18_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle18_mem", workspace=ws)
+    pkg = ws / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("from . import submod\n", encoding="utf-8")
+    (pkg / "submod.py").write_text("def real_fn() -> int:\n    return 5\n", encoding="utf-8")
+    (ws / "aliased_caller.py").write_text(
+        "from contextlib import suppress\n"
+        "import pkg as p\n\n"
+        "def run_safe() -> int:\n"
+        "    with suppress(AttributeError):\n"
+        "        return p.submod.optional_hook()\n"
+        "    return p.submod.real_fn()\n\n"
+        "def run_bad() -> int:\n"
+        "    return p.submod.missing_fn()\n",
+        encoding="utf-8",
+    )
+    bb.scan_workspace()
+    issues = bb.check_import_consistency("aliased_caller.py")
+    assert len(issues) == 1
+    assert "p.submod.missing_fn" in issues[0].message
 
 

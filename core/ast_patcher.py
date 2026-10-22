@@ -56,6 +56,11 @@ def _node_symbol_names(node: ast.stmt) -> list[str]:
         ):
             try_names.extend(_node_symbol_names(sub))
         return list(dict.fromkeys(try_names))
+    if isinstance(node, ast.With):
+        with_names: list[str] = []
+        for sub in node.body:
+            with_names.extend(_node_symbol_names(sub))
+        return list(dict.fromkeys(with_names))
     return []
 
 
@@ -84,6 +89,11 @@ def _imported_bound_names(node: ast.stmt) -> set[str]:
         ):
             bound.update(_imported_bound_names(sub))
         return bound
+    if isinstance(node, ast.With) and not _node_symbol_names(node):
+        with_bound: set[str] = set()
+        for sub in node.body:
+            with_bound.update(_imported_bound_names(sub))
+        return with_bound
     return set()
 
 
@@ -282,7 +292,7 @@ class ASTPatcher:
                         preserved_imports.append(imp_key)
                 continue
             if (
-                isinstance(node, ast.Try)
+                isinstance(node, (ast.Try, ast.With))
                 or (isinstance(node, ast.If) and not _is_main_guard(node))
             ) and not _node_symbol_names(node):
                 bound = _imported_bound_names(node)

@@ -771,6 +771,11 @@ class Blackboard:
                         for child in ast.walk(sub):
                             if isinstance(child, (ast.Import, ast.ImportFrom)):
                                 guarded_imports.add(id(child))
+                if "suppress" in ctx_str and "AttributeError" in ctx_str:
+                    for sub in tnode.body:
+                        for child in ast.walk(sub):
+                            if isinstance(child, ast.Attribute):
+                                guarded_attrs.add(id(child))
 
         for node in ast.walk(tree):
             if id(node) in guarded_imports:
@@ -826,6 +831,12 @@ class Blackboard:
                 for alias in node.names:
                     if self._module_record(alias.name):
                         module_aliases[alias.asname or alias.name] = alias.name
+                    if alias.asname is None and "." in alias.name:
+                        parts = alias.name.split(".")
+                        for idx in range(1, len(parts)):
+                            prefix = ".".join(parts[:idx])
+                            if self._module_record(prefix):
+                                module_aliases.setdefault(prefix, prefix)
 
         module_dunders = {
             "__name__", "__doc__", "__file__", "__package__", "__loader__",
@@ -839,6 +850,12 @@ class Blackboard:
                     continue
                 expr_key = node.value.id if isinstance(node.value, ast.Name) else _unparse(node.value)
                 module = module_aliases.get(expr_key)
+                if not module and "." in expr_key:
+                    head, tail = expr_key.split(".", 1)
+                    if head in module_aliases:
+                        candidate_mod = f"{module_aliases[head]}.{tail}"
+                        if self._module_record(candidate_mod):
+                            module = candidate_mod
                 if not module:
                     continue
                 found = self._module_record(module)
