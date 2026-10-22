@@ -50,4 +50,4 @@ hive = "hive:main"
 
 [tool.setuptools]
 py-modules = ["hive"]
-packages = ["core", "agents", "ui"]
+packages = ["core", "agents", "ui", "probes"]
