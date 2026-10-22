@@ -787,7 +787,8 @@ class Blackboard:
                 if record.get("summary", {}).get("syntax_error"):
                     continue
                 available = defined_names(record)
-                if node.attr in available or self._module_record(f"{module}.{node.attr}"):
+                sub_attr = f"{module}.{node.attr}"
+                if node.attr in available or self._module_record(sub_attr) or self._is_package(sub_attr):
                     continue
                 if isinstance(node.ctx, ast.Store):
                     continue

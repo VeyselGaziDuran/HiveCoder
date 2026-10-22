@@ -475,6 +475,18 @@ class HiveOrchestrator:
             )
             return state
 
+    @staticmethod
+    def _workspace_files_digest(workspace: Path, rel_paths: list[str]) -> str:
+        hasher = hashlib.sha1()
+        for rel in sorted(set(rel_paths)):
+            p = workspace / rel
+            if p.is_file():
+                hasher.update(rel.encode("utf-8"))
+                hasher.update(b"\0")
+                hasher.update(p.read_bytes())
+                hasher.update(b"\0")
+        return hasher.hexdigest()
+
     def _enter_infirmary(
         self,
         mt: MicroTask,
@@ -499,9 +511,8 @@ class HiveOrchestrator:
             mt.medic_attempts += 1
             state.metrics.medic_runs += 1
             patient_file = medic.select_patient_file(mt, current_report)
-            patient_abs = workspace / patient_file
-            if patient_abs.is_file():
-                seen_hashes.add(hashlib.sha1(patient_abs.read_bytes()).hexdigest())
+            tracked_files = [patient_file, *mt.files_written, mt.target_file]
+            seen_hashes.add(self._workspace_files_digest(workspace, tracked_files))
 
             attempt_temp: Optional[float] = None
             loop_hint = ""
@@ -533,15 +544,15 @@ class HiveOrchestrator:
                 current_report = med_result.error or current_report
                 continue
 
-            if patient_abs.is_file():
-                new_hash = hashlib.sha1(patient_abs.read_bytes()).hexdigest()
-                if new_hash in seen_hashes and attempt < max_medic_attempts:
-                    self._emit(
-                        "loop_breaker",
-                        f"[{mt.id}] Identical file hash detected on attempt {attempt}; escalating temperature.",
-                        micro_id=mt.id,
-                    )
-                seen_hashes.add(new_hash)
+            post_tracked = [patient_file, *mt.files_written, *med_result.files_written, mt.target_file]
+            new_hash = self._workspace_files_digest(workspace, post_tracked)
+            if new_hash in seen_hashes and attempt < max_medic_attempts:
+                self._emit(
+                    "loop_breaker",
+                    f"[{mt.id}] Identical file state detected on attempt {attempt}; escalating temperature.",
+                    micro_id=mt.id,
+                )
+            seen_hashes.add(new_hash)
 
             self.state_machine.record_files(mt.id, med_result.files_written, med_result.relay_note)
             self._emit(

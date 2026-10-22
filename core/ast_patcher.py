@@ -47,6 +47,14 @@ def _top_level_symbol_name(node: ast.stmt) -> Optional[str]:
     return names[0] if names else None
 
 
+def _imported_bound_names(node: ast.stmt) -> set[str]:
+    if isinstance(node, ast.Import):
+        return {(a.asname or a.name.split(".")[0]) for a in node.names}
+    if isinstance(node, ast.ImportFrom):
+        return {(a.asname or a.name) for a in node.names if a.name != "*"}
+    return set()
+
+
 def _import_key(node: ast.stmt) -> Optional[str]:
     if isinstance(node, (ast.Import, ast.ImportFrom)):
         try:
@@ -207,6 +215,9 @@ class ASTPatcher:
             return incoming_source
 
         new_import_keys = {k for node in working_tree.body if (k := _import_key(node)) is not None}
+        existing_working_names = new_top_names | {
+            name for node in working_tree.body for name in _imported_bound_names(node)
+        }
         preserved_future_imports: list[str] = []
         preserved_imports: list[str] = []
         preserved_blocks: list[str] = []
@@ -217,7 +228,9 @@ class ASTPatcher:
                 if isinstance(node, ast.ImportFrom) and node.module == "__future__":
                     preserved_future_imports.append(imp_key)
                 else:
-                    preserved_imports.append(imp_key)
+                    bound = _imported_bound_names(node)
+                    if not bound or not bound.issubset(existing_working_names):
+                        preserved_imports.append(imp_key)
                 continue
             node_syms = _node_symbol_names(node)
             if node_syms and any(s in missing_top for s in node_syms):
