@@ -66,6 +66,7 @@ class MemoryLifecycle:
             ws = blackboard.workspace
             if ws is not None and not (ws / rel).exists():
                 del blackboard.files[rel]
+                blackboard.verified_symbols.pop(rel, None)
                 continue
             matching_notes = [n["note"] for n in kept if n.get("file") == rel]
             record["last_note"] = matching_notes[-1] if matching_notes else ""

@@ -95,18 +95,19 @@ class ContextBuilder:
 
     def build(self, task: MicroTask, extra_files: Optional[list[str]] = None) -> ContextBundle:
         spec = format_task_spec(task)
-        targets = [task.target_file, *(extra_files or [])]
+        targets = list(dict.fromkeys([task.target_file, *(extra_files or [])]))
+        file_budget = int(self.max_chars * 0.5)
+        per_file_budget = max(400, file_budget // max(1, len(targets)) - 120)
         file_sections: list[str] = []
         for rel in targets:
             content = self.read_file(rel)
             if content is None:
                 file_sections.append(f"# CURRENT CONTENT OF {rel}\n(file does not exist yet: create it)")
             else:
+                if len(content) > per_file_budget:
+                    content = _middle_truncate(content, per_file_budget)
                 file_sections.append(f"# CURRENT CONTENT OF {rel}\n<<<CURRENT_FILE>>>\n{content}<<<END_CURRENT_FILE>>>")
         files_text = "\n\n".join(file_sections)
-        file_budget = int(self.max_chars * 0.5)
-        if len(files_text) > file_budget:
-            files_text = _middle_truncate(files_text, file_budget)
         memory_budget = max(800, self.max_chars - len(spec) - len(files_text) - 200)
         memory = self._memory(targets, memory_budget)
         text = f"{spec}\n\n{memory}\n\n{files_text}\n"

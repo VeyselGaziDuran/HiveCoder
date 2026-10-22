@@ -416,6 +416,10 @@ class Blackboard:
     def notes(self) -> list[dict[str, Any]]:
         return self.data["notes"]
 
+    @property
+    def verified_symbols(self) -> dict[str, list[str]]:
+        return self.data.setdefault("verified_symbols", {})
+
     def set_runtime_context(self, context_markdown: str) -> None:
         """Store runtime version and package radar constraints on the Blackboard."""
         self.data["runtime_context"] = context_markdown.strip()
@@ -428,6 +432,8 @@ class Blackboard:
         for filepath in filepaths:
             rel = normalize_relpath(ws, filepath)
             record = self.files.get(rel)
+            if not record and (ws / rel).is_file():
+                record = self.update_file_record(rel)
             if not record or record.get("kind") != "python":
                 continue
             own_names = {
@@ -549,6 +555,7 @@ class Blackboard:
         rel = normalize_relpath(ws, filepath)
         if rel in self.files:
             del self.files[rel]
+            self.verified_symbols.pop(rel, None)
             self.save()
             return True
         return False
@@ -589,6 +596,7 @@ class Blackboard:
                     }
         for stale in [p for p in self.files if p not in seen]:
             del self.files[stale]
+            self.verified_symbols.pop(stale, None)
         self.save()
         return seen
 

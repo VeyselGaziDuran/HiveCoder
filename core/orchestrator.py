@@ -511,7 +511,7 @@ class HiveOrchestrator:
             mt.medic_attempts += 1
             state.metrics.medic_runs += 1
             patient_file = medic.select_patient_file(mt, current_report)
-            tracked_files = [patient_file, *mt.files_written, mt.target_file]
+            tracked_files = [patient_file, *mt.files_written, mt.target_file, *self.blackboard.files.keys()]
             seen_hashes.add(self._workspace_files_digest(workspace, tracked_files))
 
             attempt_temp: Optional[float] = None
@@ -544,7 +544,13 @@ class HiveOrchestrator:
                 current_report = med_result.error or current_report
                 continue
 
-            post_tracked = [patient_file, *mt.files_written, *med_result.files_written, mt.target_file]
+            post_tracked = [
+                patient_file,
+                *mt.files_written,
+                *med_result.files_written,
+                mt.target_file,
+                *self.blackboard.files.keys(),
+            ]
             new_hash = self._workspace_files_digest(workspace, post_tracked)
             if new_hash in seen_hashes and attempt < max_medic_attempts:
                 self._emit(

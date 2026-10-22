@@ -163,22 +163,25 @@ class ASTPatcher:
             new_member_names = {
                 name
                 for item in new_cls.body
-                if (name := _top_level_symbol_name(item)) is not None
+                for name in _node_symbol_names(item)
             }
             body_indent = int(getattr(new_cls.body[0], "col_offset", new_cls.col_offset + 4)) if new_cls.body else (new_cls.col_offset + 4)
             indent_prefix = " " * max(4, body_indent)
             missing_attr_snippets: list[str] = []
             missing_method_snippets: list[str] = []
             for item in old_cls.body:
-                member_name = _top_level_symbol_name(item)
-                if not member_name:
+                member_names = _node_symbol_names(item)
+                if not member_names:
                     continue
-                qualified = f"{new_cls.name}.{member_name}"
-                is_protected = qualified in protected or (
-                    new_cls.name in protected
-                    and not (member_name.startswith("__") and member_name.endswith("__") and member_name != "__init__")
+                is_protected = any(
+                    f"{new_cls.name}.{m_name}" in protected
+                    or (
+                        new_cls.name in protected
+                        and not (m_name.startswith("__") and m_name.endswith("__") and m_name != "__init__")
+                    )
+                    for m_name in member_names
                 )
-                if is_protected and member_name not in new_member_names:
+                if is_protected and not (set(member_names) & new_member_names):
                     m_start, m_end = _node_line_range(item)
                     raw_snippet = "\n".join(old_lines[m_start:m_end]).rstrip()
                     if raw_snippet:

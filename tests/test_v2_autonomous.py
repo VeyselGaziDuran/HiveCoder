@@ -698,4 +698,68 @@ def test_cycle_1_2_3_tuple_assign_jsx_apostrophe_and_deepest_patient_selection(t
     assert "tests/test_box.py" in related
 
 
+def test_cycle_4_5_import_dedup_subpackage_context_truncation_and_lifecycle(tmp_path: Path) -> None:
+    """Verify ASTPatcher bound-import dedup, subpackage attribute check, per-file context truncation, and lifecycle cleanup."""
+    from core.context_builder import ContextBuilder
+    from core.state_machine import MicroTask
+
+    ws = tmp_path / "cycle45_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle45_mem", workspace=ws)
+
+    # 1. Bound import deduplication in ASTPatcher (e.g., 'import math as m' vs 'from math import sqrt as m')
+    old_src = (
+        "import math as m\n"
+        "def old_fn(x: float) -> float:\n"
+        "    return float(x)\n"
+    )
+    new_src = (
+        "from math import sqrt as m\n"
+        "def new_fn(x: float) -> float:\n"
+        "    return m(x)\n"
+    )
+    merged = ASTPatcher.merge_preserving_symbols(old_src, new_src, protected_symbols={"old_fn"})
+    # 'import math as m' must NOT be re-injected because 'm' is already bound in new_src
+    assert "import math as m" not in merged
+    ns: dict[str, Any] = {}
+    exec(compile(merged, "<cycle4_merged>", "exec"), ns)
+    assert ns["new_fn"](16.0) == 4.0
+    assert ns["old_fn"](5.0) == 5.0
+
+    # 2. Subpackage attribute access in Blackboard.check_import_consistency
+    pkg_dir = ws / "pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
+    (pkg_dir / "submod.py").write_text("def run_sub() -> int:\n    return 7\n", encoding="utf-8")
+    (ws / "caller.py").write_text(
+        "import pkg.submod\n"
+        "def call_it() -> int:\n"
+        "    return pkg.submod.run_sub()\n",
+        encoding="utf-8",
+    )
+    bb.scan_workspace()
+    assert bb.check_import_consistency("caller.py") == []
+
+    # 3. ContextBuilder per-file truncation preserves headers & delimiters across multiple files
+    (ws / "big_a.py").write_text("A_LINE = 1\n" * 600, encoding="utf-8")
+    (ws / "big_b.py").write_text("B_LINE = 2\n" * 600, encoding="utf-8")
+    ctx_builder = ContextBuilder(bb, ws, max_chars=3000)
+    mt = MicroTask(id="step-x", title="Update big_a", target_file="big_a.py", kind="code")
+    bundle = ctx_builder.build(mt, extra_files=["big_b.py", "big_a.py"])
+    assert bundle.text.count("# CURRENT CONTENT OF big_a.py") == 1
+    assert bundle.text.count("# CURRENT CONTENT OF big_b.py") == 1
+    assert bundle.text.count("<<<CURRENT_FILE>>>") == 2
+    assert bundle.text.count("<<<END_CURRENT_FILE>>>") == 2
+
+    # 4. MemoryLifecycle.purge_unverified_notes removes verified_symbols for deleted files
+    bb.lock_verified_symbols(["big_b.py"])
+    assert "big_b.py" in bb.verified_symbols
+    (ws / "big_b.py").unlink()
+    lifecycle = MemoryLifecycle()
+    lifecycle.purge_unverified_notes(bb, verified_task_ids=set())
+    assert "big_b.py" not in bb.files
+    assert "big_b.py" not in bb.verified_symbols
+
+
+
 
