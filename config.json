@@ -1,0 +1,61 @@
+{
+  "provider": "ollama",
+  "ollama": {
+    "base_url": "http://localhost:11434",
+    "model": "qwen3:8b",
+    "num_ctx": 8192,
+    "think": false
+  },
+  "api": {
+    "style": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "api_key_env": "HIVE_API_KEY",
+    "model": "gpt-4o-mini",
+    "max_tokens": 4096
+  },
+  "generation": {
+    "temperature": 0.2,
+    "timeout_seconds": 600,
+    "max_retries": 3
+  },
+  "thermal": {
+    "profile": "eco",
+    "unload_model_on_cooldown": true,
+    "profiles": {
+      "eco": {
+        "micro_pause_seconds": 10,
+        "cooldown_every_tasks": 3,
+        "cooldown_seconds": 300,
+        "max_continuous_work_seconds": 480
+      },
+      "balanced": {
+        "micro_pause_seconds": 5,
+        "cooldown_every_tasks": 5,
+        "cooldown_seconds": 180,
+        "max_continuous_work_seconds": 900
+      },
+      "turbo": {
+        "micro_pause_seconds": 1,
+        "cooldown_every_tasks": 0,
+        "cooldown_seconds": 0,
+        "max_continuous_work_seconds": 0
+      }
+    }
+  },
+  "limits": {
+    "max_micro_tasks": 30,
+    "max_medic_attempts": 3,
+    "max_coder_attempts": 2,
+    "max_context_chars": 14000,
+    "max_relay_notes_in_context": 12,
+    "pytest_timeout_seconds": 180
+  },
+  "agents": {
+    "llm_inspector": true
+  },
+  "git_guard": {
+    "enabled": true
+  },
+  "memory_dir": "memory",
+  "default_workspace": "workspace"
+}

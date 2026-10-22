@@ -1,0 +1,21 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+*.egg-info/
+
+# HiveCoder runtime artifacts
+.hive_tmp/
+memory/state.json
+memory/hive_log.jsonl
+memory/snapshots/
+workspace/
+
+# Secrets & OS noise
+.env
+.DS_Store
