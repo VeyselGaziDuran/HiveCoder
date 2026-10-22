@@ -742,10 +742,9 @@ class Blackboard:
                 catches_import_err = False
                 for h in tnode.handlers:
                     if h.type is None:
-                        catches_import_err = True
-                        break
+                        continue
                     htype = _unparse(h.type)
-                    if any(err in htype for err in ("ImportError", "ModuleNotFoundError", "Exception", "BaseException")):
+                    if any(err in htype for err in ("ImportError", "ModuleNotFoundError")):
                         catches_import_err = True
                         break
                 if catches_import_err:
@@ -810,8 +809,9 @@ class Blackboard:
                         module_aliases[alias.asname or alias.name] = alias.name
 
         for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                module = module_aliases.get(node.value.id)
+            if isinstance(node, ast.Attribute) and isinstance(node.value, (ast.Name, ast.Attribute)):
+                expr_key = node.value.id if isinstance(node.value, ast.Name) else _unparse(node.value)
+                module = module_aliases.get(expr_key)
                 if not module:
                     continue
                 found = self._module_record(module)
@@ -831,7 +831,7 @@ class Blackboard:
                     ConsistencyIssue(
                         rel,
                         node.lineno,
-                        f"'{node.value.id}.{node.attr}' does not exist in {mod_path}. Available names: {hint or '(none)'}",
+                        f"'{expr_key}.{node.attr}' does not exist in {mod_path}. Available names: {hint or '(none)'}",
                     )
                 )
         unique: dict[str, ConsistencyIssue] = {}

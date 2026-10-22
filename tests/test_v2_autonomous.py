@@ -1098,6 +1098,41 @@ def test_cycle_15_if_version_import_preservation_and_try_import_error_consistenc
     assert bb.check_import_consistency("consumer.py") == []
 
 
+def test_cycle_16_chained_submodule_attribute_validation_and_narrow_import_guard(tmp_path: Path) -> None:
+    """Verify 'import pkg.submod; pkg.submod.missing()' is caught and generic 'except Exception:' does not mask bad imports."""
+    ws = tmp_path / "cycle16_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle16_mem", workspace=ws)
+
+    pkg = ws / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "submod.py").write_text("def valid_fn() -> int:\n    return 1\n", encoding="utf-8")
+    (ws / "bad_caller.py").write_text(
+        "import pkg.submod\n"
+        "def run() -> int:\n"
+        "    return pkg.submod.hallucinated_fn()\n",
+        encoding="utf-8",
+    )
+    (ws / "generic_try.py").write_text(
+        "try:\n"
+        "    from pkg.submod import nonexistent_sym\n"
+        "except Exception:\n"
+        "    nonexistent_sym = None\n",
+        encoding="utf-8",
+    )
+    bb.scan_workspace()
+
+    issues_chained = bb.check_import_consistency("bad_caller.py")
+    assert len(issues_chained) == 1
+    assert "pkg.submod.hallucinated_fn" in issues_chained[0].message
+
+    issues_generic = bb.check_import_consistency("generic_try.py")
+    assert len(issues_generic) == 1
+    assert "nonexistent_sym" in issues_generic[0].message
+
+
+
 
 
 
