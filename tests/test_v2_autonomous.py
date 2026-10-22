@@ -334,3 +334,216 @@ Fixed assertion in tests/test_store.py.
     assert not (memory_dir / "state.json").exists()
     assert not (workspace / ".hive_tmp").exists()
     assert not (workspace / "__pycache__").exists()
+
+
+def test_ast_patcher_future_imports_and_class_level_methods() -> None:
+    """Verify ASTPatcher keeps __future__ imports at line 1 and restores omitted class methods."""
+    existing = (
+        '"""User service module."""\n'
+        "from __future__ import annotations\n"
+        "import hashlib\n\n"
+        "class UserService:\n"
+        "    def __init__(self) -> None:\n"
+        "        self.users: dict[str, str] = {}\n\n"
+        "    def register(self, username: str, password: str) -> str:\n"
+        "        digest = hashlib.sha256(password.encode()).hexdigest()\n"
+        "        self.users[username] = digest\n"
+        "        return digest\n\n"
+        "def helper_version() -> str:\n"
+        "    return '1.0'\n"
+    )
+    # Small model re-emits UserService with ONLY authenticate() and forgets __init__, register, and helper_version
+    incoming = (
+        '"""User service module."""\n'
+        "from __future__ import annotations\n\n"
+        "class UserService:\n"
+        "    def authenticate(self, username: str, digest: str) -> bool:\n"
+        "        return self.users.get(username) == digest\n\n"
+        'if __name__ == "__main__":\n'
+        "    svc = UserService()\n"
+    )
+
+    merged = ASTPatcher.merge_preserving_symbols(
+        existing_source=existing,
+        incoming_source=incoming,
+        protected_symbols={"UserService", "UserService.__init__", "UserService.register", "helper_version"},
+    )
+
+    # Must compile cleanly without SyntaxError (from __future__ stays at top)
+    code_obj = compile(merged, "<merged>", "exec")
+    ns: dict[str, Any] = {}
+    exec(code_obj, ns)
+    svc = ns["UserService"]()
+    token = svc.register("veysel", "secret")
+    assert svc.authenticate("veysel", token) is True
+    assert ns["helper_version"]() == "1.0"
+
+
+def test_architect_retry_topological_sort_and_auto_test_injection(tmp_path: Path) -> None:
+    """Verify ArchitectAgent retries invalid JSON, orders code before tests, and auto-injects missing tests."""
+    from agents.architect_agent import ArchitectAgent
+    from core.context_builder import ContextBuilder
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "mem", workspace=ws)
+    ctx = ContextBuilder(bb, ws)
+
+    # Reply 1 is broken non-JSON; Reply 2 puts a test before code; Reply 3 has code without tests
+    reply_broken = "Sorry, I forgot the JSON format!"
+    reply_reordered = json.dumps(
+        {
+            "micro_tasks": [
+                {"id": "step-1", "title": "Write tests first", "target_file": "tests/test_core.py", "kind": "test"},
+                {"id": "step-2", "title": "Write core.py", "target_file": "core.py", "kind": "code"},
+            ]
+        }
+    )
+    reply_no_test = json.dumps(
+        {
+            "micro_tasks": [
+                {"id": "step-1", "title": "Implement engine.py", "target_file": "engine.py", "kind": "code"},
+            ]
+        }
+    )
+
+    llm = TempTrackingLLMClient(DEFAULT_CONFIG, [reply_broken, reply_reordered, reply_no_test])
+    arch = ArchitectAgent(llm, bb, ctx, ws)
+
+    plan1 = arch.plan("Build core module", max_retries=2)
+    assert len(plan1) == 2
+    assert plan1[0].kind == "code" and plan1[0].target_file == "core.py"
+    assert plan1[1].kind == "test" and plan1[1].target_file == "tests/test_core.py"
+
+    plan2 = arch.plan("Build engine module", max_retries=1)
+    assert len(plan2) == 2
+    assert plan2[0].kind == "code" and plan2[0].target_file == "engine.py"
+    assert plan2[1].kind == "test" and plan2[1].target_file == "tests/test_engine.py"
+
+
+def test_multilang_blackboard_indexing_and_brace_validator(tmp_path: Path) -> None:
+    """Verify Blackboard indexes TypeScript/Dart symbols and Validator catches unclosed braces."""
+    from core.validator import Validator
+
+    ws = tmp_path / "mobile_app"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "mem", workspace=ws)
+
+    tsx_file = ws / "App.tsx"
+    tsx_file.write_text(
+        "import React from 'react';\n"
+        "export interface AppProps {\n"
+        "  title: string;\n"
+        "}\n"
+        "export const HomeScreen = (props: AppProps) => {\n"
+        "  return null;\n"
+        "};\n",
+        encoding="utf-8",
+    )
+    dart_file = ws / "main.dart"
+    dart_file.write_text(
+        "import 'package:flutter/material.dart';\n"
+        "class CounterWidget extends StatelessWidget {\n"
+        "  Widget build(BuildContext context) {\n"
+        "    return Container();\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    bb.scan_workspace()
+    compact = bb.get_compact_memory(target_files=["App.tsx", "main.dart"])
+    assert "interface AppProps" in compact
+    assert "const HomeScreen" in compact
+    assert "class CounterWidget extends StatelessWidget" in compact
+    assert "fn build(BuildContext context)" in compact
+
+    validator = Validator(ws)
+    assert validator.check_syntax(["App.tsx", "main.dart"]).passed is True
+
+    # Introduce an unclosed brace in main.dart
+    dart_file.write_text("class BrokenWidget {\n  void build() {\n", encoding="utf-8")
+    res = validator.check_syntax(["main.dart"])
+    assert res.passed is False
+    assert "unclosed '{'" in res.output
+
+
+def test_target_path_alignment_missing_pkg_alert_and_inspector_override(tmp_path: Path) -> None:
+    """Verify subfolder path alignment, missing-package alert in MedicAgent, and false-rejection override."""
+    ws = tmp_path / "app_ws"
+    mem = tmp_path / "mem"
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["memory_dir"] = str(mem)
+    cfg["default_workspace"] = str(ws)
+    cfg["agents"]["llm_inspector"] = True
+    cfg["thermal"]["profiles"]["balanced"]["micro_pause_seconds"] = 0
+
+    plan_json = json.dumps(
+        {
+            "micro_tasks": [
+                {"id": "step-1", "title": "Create src/calc.py", "target_file": "src/calc.py", "kind": "code"},
+                {"id": "step-2", "title": "Create tests/test_calc.py", "target_file": "tests/test_calc.py", "kind": "test"},
+            ]
+        }
+    )
+    # Small model omits 'src/' prefix and writes 'calc.py' instead of 'src/calc.py'
+    coder_reply = """\
+<<<FILE_PATH>>>
+calc.py
+<<<END_FILE_PATH>>>
+<<<CODE>>>
+def add(a: int, b: int) -> int:
+    return a + b
+<<<END_CODE>>>
+<<<RELAY_NOTE>>>
+Implemented add(a: int, b: int) -> int in src/calc.py.
+<<<END_RELAY_NOTE>>>
+"""
+    inspector_approve_1 = '{"approved": true, "issues": [], "summary": "OK"}'
+
+    tester_reply = """\
+<<<FILE_PATH>>>
+tests/test_calc.py
+<<<END_FILE_PATH>>>
+<<<CODE>>>
+from src.calc import add
+
+
+def test_add() -> None:
+    assert add(2, 3) == 5
+<<<END_CODE>>>
+<<<RELAY_NOTE>>>
+Added test_add() in tests/test_calc.py.
+<<<END_RELAY_NOTE>>>
+"""
+    # Inspector LLM hallucinated a false rejection even though AST, imports, and pytest all pass!
+    inspector_false_reject_2 = '{"approved": false, "issues": ["Subjective style nitpick"], "summary": "Rejected"}'
+
+    llm = TempTrackingLLMClient(
+        cfg,
+        [plan_json, coder_reply, inspector_approve_1, tester_reply, inspector_false_reject_2],
+    )
+    events: list[str] = []
+    sensor = ThermalSensor(probe_fn=lambda: ThermalReading(level="nominal", temp_celsius=48.0))
+    orchestrator = HiveOrchestrator(
+        config=cfg,
+        llm_client=llm,
+        on_event=lambda kind, _msg, _data: events.append(kind),
+        sleeper=lambda _s: None,
+        thermal_sensor=sensor,
+    )
+
+    state = orchestrator.run_task("Create src/calc.py and tests", workspace=ws)
+    assert state.phase == Phase.COMPLETED
+    assert (ws / "src" / "calc.py").is_file()
+    assert "inspection_override" in events
+
+    # Also verify MedicAgent._detect_missing_package_alert directly
+    from agents.medic_agent import MedicAgent
+    from core.context_builder import ContextBuilder
+
+    medic = MedicAgent(llm, orchestrator.blackboard, ContextBuilder(orchestrator.blackboard, ws), ws)
+    alert = medic._detect_missing_package_alert("ModuleNotFoundError: No module named 'nonexistent_super_pkg_999'")
+    assert "nonexistent_super_pkg_999" in alert
+    assert "NOT installed" in alert
+
