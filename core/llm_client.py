@@ -103,9 +103,16 @@ def strip_code_fences(code: str) -> str:
 
 def _clean_path(raw: str) -> str:
     for line in raw.strip().splitlines():
-        line = line.strip().strip("`'\"*").strip()
-        if line.lower().startswith(("path:", "file:")):
-            line = line.split(":", 1)[1].strip().strip("`'\"")
+        line = line.strip()
+        if not line or line.startswith("```"):
+            continue
+        line = re.sub(r"^[#*>-]+\s*", "", line).strip().strip("`'\"*").strip()
+        line = re.sub(
+            r"^(?:file_?path|target_?file|file_?name|path|file)\s*:\s*",
+            "",
+            line,
+            flags=re.IGNORECASE,
+        ).strip().strip("`'\"*").strip()
         if line and not line.startswith("```"):
             return line
     return ""

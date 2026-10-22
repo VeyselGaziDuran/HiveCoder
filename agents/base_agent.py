@@ -120,11 +120,7 @@ class BaseAgent:
                 rel_path = default_norm
             if len(parsed.files) == 1 and rel_path != default_norm:
                 same_basename = Path(rel_path).name == Path(default_norm).name
-                neither_exists = (
-                    not (self.workspace / default_norm).exists()
-                    and not (self.workspace / rel_path).exists()
-                )
-                if same_basename or neither_exists:
+                if same_basename or not (self.workspace / rel_path).exists():
                     rel_path = default_norm
             abs_path = self.workspace / rel_path
             abs_path.parent.mkdir(parents=True, exist_ok=True)

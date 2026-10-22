@@ -1372,6 +1372,45 @@ def test_cycle_21_plan_truncation_preserves_test_and_signature_probe_class_metho
     assert probe.inspect_symbol("tkinter.ttk", "Button") == []
 
 
+def test_cycle_22_clean_path_prefixes_and_existing_target_alignment(tmp_path: Path) -> None:
+    """Verify _clean_path strips markdown/label prefixes and _materialize_nano_response aligns to existing target_file."""
+    from agents.coder_agent import CoderAgent
+    from core.context_builder import ContextBuilder
+    from core.llm_client import parse_nano_tags
+
+    raw_nano = (
+        "<<<FILE_PATH>>>\n"
+        "- filepath: `wrong_dir/hallucinated_name.py`\n"
+        "<<<END_FILE_PATH>>>\n"
+        "<<<CODE>>>\n"
+        "def updated_fn() -> int:\n"
+        "    return 99\n"
+        "<<<END_CODE>>>\n"
+        "<<<RELAY_NOTE>>>\n"
+        "Updated target module.\n"
+        "<<<END_RELAY_NOTE>>>\n"
+    )
+    parsed = parse_nano_tags(raw_nano)
+    assert parsed.files[0].path == "wrong_dir/hallucinated_name.py"
+
+    ws = tmp_path / "cycle22_ws"
+    ws.mkdir()
+    # Even when default_target ('service.py') already exists on disk, a non-existent hallucinated path aligns to 'service.py'
+    (ws / "service.py").write_text("def old_fn() -> int:\n    return 1\n", encoding="utf-8")
+    bb = Blackboard(tmp_path / "cycle22_mem", workspace=ws)
+    bb.scan_workspace()
+    bb.lock_verified_symbols(["service.py"])
+    ctx = ContextBuilder(bb, ws)
+    coder = CoderAgent(LLMClient({"provider": "ollama"}), bb, ctx, ws)
+    written, _note = coder._materialize_nano_response(parsed, default_target="service.py", task_id="step-1")
+    assert written == ["service.py"]
+    assert not (ws / "wrong_dir").exists()
+    merged_text = (ws / "service.py").read_text(encoding="utf-8")
+    assert "def old_fn" in merged_text
+    assert "def updated_fn" in merged_text
+
+
+
 
 
 

@@ -19,13 +19,17 @@ DEFAULT_EXCLUDES = (
     ".git/",
     "venv/",
     ".venv/",
+    "env/",
     "__pycache__/",
     "*.pyc",
+    "*.pyo",
     ".pytest_cache/",
     ".hive_tmp/",
     ".mypy_cache/",
+    ".ruff_cache/",
     "node_modules/",
     ".coverage",
+    ".coverage.*",
     ".DS_Store",
 )
 
