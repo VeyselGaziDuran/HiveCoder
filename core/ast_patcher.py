@@ -67,6 +67,11 @@ def _imported_bound_names(node: ast.stmt) -> set[str]:
         return {(a.asname or a.name.split(".")[0]) for a in node.names}
     if isinstance(node, ast.ImportFrom):
         return {(a.asname or a.name) for a in node.names if a.name != "*"}
+    if isinstance(node, ast.If) and not _is_main_guard(node) and not _node_symbol_names(node):
+        if_bound: set[str] = set()
+        for sub in (*node.body, *node.orelse):
+            if_bound.update(_imported_bound_names(sub))
+        return if_bound
     if isinstance(node, ast.Try) and not _node_symbol_names(node):
         bound: set[str] = set()
         for sub in (
@@ -274,7 +279,10 @@ class ASTPatcher:
                     if not bound or not bound.issubset(existing_working_names):
                         preserved_imports.append(imp_key)
                 continue
-            if isinstance(node, ast.Try) and not _node_symbol_names(node):
+            if (
+                isinstance(node, ast.Try)
+                or (isinstance(node, ast.If) and not _is_main_guard(node))
+            ) and not _node_symbol_names(node):
                 bound = _imported_bound_names(node)
                 if bound and not bound.issubset(existing_working_names):
                     start, end = _node_line_range(node)

@@ -736,7 +736,27 @@ class Blackboard:
         module_aliases: dict[str, str] = {}
         package_parts = list(PurePosixPath(rel).parent.parts)
 
+        guarded_imports: set[int] = set()
+        for tnode in ast.walk(tree):
+            if isinstance(tnode, ast.Try):
+                catches_import_err = False
+                for h in tnode.handlers:
+                    if h.type is None:
+                        catches_import_err = True
+                        break
+                    htype = _unparse(h.type)
+                    if any(err in htype for err in ("ImportError", "ModuleNotFoundError", "Exception", "BaseException")):
+                        catches_import_err = True
+                        break
+                if catches_import_err:
+                    for sub in tnode.body:
+                        for child in ast.walk(sub):
+                            if isinstance(child, (ast.Import, ast.ImportFrom)):
+                                guarded_imports.add(id(child))
+
         for node in ast.walk(tree):
+            if id(node) in guarded_imports:
+                continue
             if isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 if node.level:

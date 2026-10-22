@@ -1061,6 +1061,44 @@ def test_cycle_14_two_space_class_indent_and_try_except_import_preservation() ->
     assert ns["decode_obj"]('{"k": 9}') == {"k": 9}
 
 
+def test_cycle_15_if_version_import_preservation_and_try_import_error_consistency(tmp_path: Path) -> None:
+    """Verify top-level if-import blocks survive ASTPatcher and try/except ImportError guards pass check_import_consistency."""
+    old_src = (
+        "import sys\n"
+        "if sys.version_info >= (3, 11):\n"
+        "    import tomllib as toml_loader\n"
+        "else:\n"
+        "    import json as toml_loader\n\n"
+        "def load_cfg(raw: str) -> dict:\n"
+        "    return toml_loader.loads(raw)\n"
+    )
+    new_src = (
+        "def default_port() -> int:\n"
+        "    return 9000\n"
+    )
+    merged = ASTPatcher.merge_preserving_symbols(old_src, new_src, protected_symbols={"load_cfg"})
+    ns: dict[str, Any] = {}
+    exec(compile(merged, "<cycle15_merged>", "exec"), ns)
+    assert ns["load_cfg"]("port = 8080\n") == {"port": 8080}
+    assert ns["default_port"]() == 9000
+
+    # Blackboard.check_import_consistency skips guarded try-body imports under except ImportError
+    ws = tmp_path / "cycle15_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle15_mem", workspace=ws)
+    (ws / "provider.py").write_text("def fallback_fn() -> int:\n    return 1\n", encoding="utf-8")
+    (ws / "consumer.py").write_text(
+        "try:\n"
+        "    from provider import fast_c_extension_fn as run_fn\n"
+        "except ImportError:\n"
+        "    from provider import fallback_fn as run_fn\n",
+        encoding="utf-8",
+    )
+    bb.scan_workspace()
+    assert bb.check_import_consistency("consumer.py") == []
+
+
+
 
 
 
