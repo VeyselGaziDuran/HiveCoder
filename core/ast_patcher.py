@@ -308,15 +308,25 @@ class ASTPatcher:
 
     @staticmethod
     def normalize_root_relative_imports(source: str, rel_path: str) -> str:
-        """Convert invalid root-level ``from .mod import x`` to ``from mod import x``."""
-        if "/" in rel_path or not rel_path.endswith(".py"):
+        """Convert invalid root-level or beyond-top-level relative imports to absolute imports."""
+        if not rel_path.endswith(".py"):
             return source
-        return re.sub(
-            r"^(\s*)from\s+\.([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import\s+",
-            r"\1from \2 import ",
-            source,
-            flags=re.MULTILINE,
-        )
+        depth = rel_path.count("/")
+        if depth == 0:
+            return re.sub(
+                r"^(\s*)from\s+\.+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import\s+",
+                r"\1from \2 import ",
+                source,
+                flags=re.MULTILINE,
+            )
+        if depth == 1:
+            return re.sub(
+                r"^(\s*)from\s+\.{2,}([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import\s+",
+                r"\1from \2 import ",
+                source,
+                flags=re.MULTILINE,
+            )
+        return source
 
     @staticmethod
     def extract_traceback_window(

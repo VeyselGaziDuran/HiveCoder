@@ -814,16 +814,79 @@ class Blackboard:
         return list(unique.values())
 
     def find_stub_markers(self, filepath: str) -> list[ConsistencyIssue]:
-        """Flag unfinished-code markers (to-do comments, NotImplementedError, bare ...)."""
+        """Flag unfinished-code markers while permitting Protocol, @overload, @abstractmethod, and docstrings."""
         ws = self._require_workspace()
         rel = normalize_relpath(ws, filepath)
         abs_path = ws / rel
         if not abs_path.exists() or abs_path.suffix != ".py":
             return []
+        source = abs_path.read_text(encoding="utf-8", errors="replace")
+        lines = source.splitlines()
         issues: list[ConsistencyIssue] = []
-        for lineno, line in enumerate(abs_path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-            for pattern in STUB_PATTERNS:
+        comment_patterns = STUB_PATTERNS[:2]
+
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            for lineno, line in enumerate(lines, 1):
+                for pattern in STUB_PATTERNS:
+                    if pattern.search(line):
+                        issues.append(ConsistencyIssue(rel, lineno, f"unfinished code marker: {line.strip()[:80]}"))
+                        break
+            return issues
+
+        for lineno, line in enumerate(lines, 1):
+            for pattern in comment_patterns:
                 if pattern.search(line):
                     issues.append(ConsistencyIssue(rel, lineno, f"unfinished code marker: {line.strip()[:80]}"))
                     break
-        return issues
+
+        def _is_abstract_or_overload(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+            for dec in fn_node.decorator_list:
+                dec_src = _unparse(dec).lstrip("@")
+                base_dec = dec_src.split("(")[0].strip()
+                if base_dec in {"abstractmethod", "abc.abstractmethod", "overload", "typing.overload"}:
+                    return True
+            return False
+
+        def _check_function_body(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            if _is_abstract_or_overload(fn_node):
+                return
+            stmts = list(fn_node.body)
+            if (
+                len(stmts) > 1
+                and isinstance(stmts[0], ast.Expr)
+                and isinstance(getattr(stmts[0], "value", None), ast.Constant)
+                and isinstance(stmts[0].value.value, str)
+            ):
+                stmts = stmts[1:]
+            if (
+                len(stmts) == 1
+                and isinstance(stmts[0], ast.Expr)
+                and isinstance(getattr(stmts[0], "value", None), ast.Constant)
+                and stmts[0].value.value is Ellipsis
+            ):
+                ln = stmts[0].lineno
+                issues.append(ConsistencyIssue(rel, ln, f"unfinished code marker: {lines[ln - 1].strip()[:80]}"))
+            for sub in ast.walk(fn_node):
+                if isinstance(sub, ast.Raise) and sub.exc is not None:
+                    exc_src = _unparse(sub.exc)
+                    if exc_src == "NotImplementedError" or exc_src.startswith("NotImplementedError("):
+                        ln = sub.lineno
+                        issues.append(ConsistencyIssue(rel, ln, f"unfinished code marker: {lines[ln - 1].strip()[:80]}"))
+
+        for node in _iter_module_statements(tree.body):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                _check_function_body(node)
+            elif isinstance(node, ast.ClassDef):
+                bases = {_unparse(b) for b in node.bases}
+                if "Protocol" in bases or "typing.Protocol" in bases:
+                    continue
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        _check_function_body(item)
+
+        unique: dict[int, ConsistencyIssue] = {}
+        for issue in sorted(issues, key=lambda x: x.line):
+            unique.setdefault(issue.line, issue)
+        return list(unique.values())

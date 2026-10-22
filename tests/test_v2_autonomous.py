@@ -883,6 +883,51 @@ def test_cycle_9_stray_end_tag_stripping_and_scientific_notation_json_repair() -
     assert repaired["max_val"] == 2500.0
 
 
+def test_cycle_10_ast_stub_detection_protocols_and_test_relative_imports(tmp_path: Path) -> None:
+    """Verify Protocol/@abstractmethod/docstrings pass find_stub_markers while concrete stubs fail, and ..mod in tests/ normalizes."""
+    ws = tmp_path / "cycle10_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle10_mem", workspace=ws)
+
+    # 1. Protocol, @abstractmethod, and multi-line docstring with '...' must NOT be flagged as stubs
+    valid_src = (
+        "from abc import ABC, abstractmethod\n"
+        "from typing import Protocol\n\n"
+        "class StoreProto(Protocol):\n"
+        "    def fetch(self, key: str) -> str:\n"
+        "        ...\n\n"
+        "class BaseWorker(ABC):\n"
+        "    @abstractmethod\n"
+        "    def run(self) -> int:\n"
+        "        raise NotImplementedError('subclasses must implement')\n\n"
+        "def documented() -> int:\n"
+        '    """Example:\n'
+        "    ...\n"
+        '    """\n'
+        "    return 42\n"
+    )
+    (ws / "interfaces.py").write_text(valid_src, encoding="utf-8")
+    assert bb.find_stub_markers("interfaces.py") == []
+
+    # 2. Concrete function with '...' or 'raise NotImplementedError' MUST be flagged
+    stub_src = (
+        "def unfinished_fn() -> int:\n"
+        "    ...\n\n"
+        "def unimplemented_fn() -> int:\n"
+        "    raise NotImplementedError\n"
+    )
+    (ws / "stubs.py").write_text(stub_src, encoding="utf-8")
+    stub_issues = bb.find_stub_markers("stubs.py")
+    assert len(stub_issues) == 2
+    assert stub_issues[0].line == 2
+    assert stub_issues[1].line == 5
+
+    # 3. 'from ..app import get_words' inside tests/test_app.py normalizes to 'from app import get_words'
+    norm = ASTPatcher.normalize_root_relative_imports("from ..app import get_words\n", "tests/test_app.py")
+    assert norm == "from app import get_words\n"
+
+
+
 
 
 
