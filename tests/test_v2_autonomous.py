@@ -1271,4 +1271,73 @@ def test_cycle_19_star_reexport_resolution_conditional_class_merge_and_working_i
     assert "Driver.start_posix" in verified
 
 
+def test_cycle_20_triple_quote_braces_empty_pytest_suite_and_module_stem_toposort(tmp_path: Path) -> None:
+    """Verify triple-quoted strings in _check_brace_balance, 0-collected pytest rejection, and module-name toposort."""
+    from agents.architect_agent import ArchitectAgent
+    from core.context_builder import ContextBuilder
+    from core.validator import Validator
+
+    ws = tmp_path / "cycle20_ws"
+    ws.mkdir()
+    val = Validator(ws)
+
+    # 1. Triple-quoted multiline string in Kotlin/Swift/Dart containing unmatched '(' and plural possessive in JSX
+    (ws / "Query.kt").write_text(
+        'class Query {\n'
+        '    val sql = """\n'
+        '        SELECT * FROM users WHERE (active = 1\n'
+        '    """\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    (ws / "Banner.tsx").write_text(
+        "export const Banner = () => {\n"
+        "  return <div>Users' dashboard (active)</div>;\n"
+        "};\n",
+        encoding="utf-8",
+    )
+    assert val.check_syntax(["Query.kt", "Banner.tsx"]).passed is True
+
+    # 2. Existing test file with 0 test_* functions must fail run_pytest() even when called without explicit targets
+    (ws / "app.py").write_text("def calc() -> int:\n    return 1\n", encoding="utf-8")
+    (ws / "test_app.py").write_text("def helper_only() -> int:\n    return 1\n", encoding="utf-8")
+    assert val.validate(["app.py"], run_tests=True).passed is False
+
+    # 3. ArchitectAgent orders 'from storage import Store' after storage.py even when '.py' is omitted in description
+    bb = Blackboard(tmp_path / "cycle20_mem", workspace=ws)
+    ctx = ContextBuilder(bb, ws)
+    arch = ArchitectAgent(LLMClient({"provider": "ollama"}), bb, ctx, ws)
+    raw_plan = """
+    {
+      "micro_tasks": [
+        {
+          "id": "step-1",
+          "title": "Build service",
+          "target_file": "pkg/__init__.py",
+          "kind": "code",
+          "description": "Export package symbols"
+        },
+        {
+          "id": "step-2",
+          "title": "Implement API",
+          "target_file": "pkg/api.py",
+          "kind": "code",
+          "description": "Use from storage import Store to persist records"
+        },
+        {
+          "id": "step-3",
+          "title": "Implement Store",
+          "target_file": "pkg/storage.py",
+          "kind": "code",
+          "description": "Define Store class"
+        }
+      ]
+    }
+    """
+    plan = arch.parse_plan(raw_plan)
+    assert [t.target_file for t in plan[:3]] == ["pkg/storage.py", "pkg/api.py", "pkg/__init__.py"]
+    assert plan[3].target_file == "tests/test_storage.py"
+
+
+
 

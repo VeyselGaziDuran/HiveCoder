@@ -12,6 +12,7 @@ from core.blackboard import normalize_relpath
 from core.context_builder import format_task_spec
 from core.llm_client import parse_nano_tags
 from core.state_machine import MicroTask
+from core.validator import is_test_file
 from probes.runtime_probe import RuntimeProbe
 from probes.signature_probe import SignatureProbe, format_probe_summary
 
@@ -47,7 +48,7 @@ class MedicAgent(BaseAgent):
         # If the deepest frame in a non-AssertionError crash is a workspace module, repair that module
         if frame_files and "AssertionError" not in error_output:
             deepest = frame_files[-1]
-            if not Path(deepest).name.startswith("test_"):
+            if not is_test_file(deepest):
                 return deepest
 
         candidates = list(dict.fromkeys([*task.files_written, task.target_file]))

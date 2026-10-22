@@ -171,7 +171,16 @@ class ArchitectAgent(BaseAgent):
         has_test = any(mt.kind == "test" for mt in tasks)
         py_code_tasks = [mt for mt in tasks if mt.kind == "code" and mt.target_file.endswith(".py")]
         if not has_test and py_code_tasks and len(tasks) < self.max_micro_tasks:
-            primary_stem = Path(py_code_tasks[0].target_file).stem
+            non_init_stems = [
+                Path(mt.target_file).stem
+                for mt in py_code_tasks
+                if Path(mt.target_file).stem != "__init__"
+            ]
+            primary_stem = (
+                non_init_stems[0]
+                if non_init_stems
+                else (Path(py_code_tasks[0].target_file).parent.name or "package")
+            )
             test_target = f"tests/test_{primary_stem}.py"
             auto_id = f"step-{len(tasks) + 1}"
             while auto_id in seen_ids:
@@ -202,13 +211,29 @@ class ArchitectAgent(BaseAgent):
             return code_tasks + test_tasks
 
         def _mentions_file(src: MicroTask, dep: MicroTask) -> bool:
-            dep_name = Path(dep.target_file).name.lower()
+            dep_path = Path(dep.target_file)
+            dep_name = dep_path.name.lower()
             if dep_name == "__init__.py":
                 return False
             haystack = f"{src.title} {src.description} {' '.join(src.acceptance)}".lower()
             if dep.target_file.lower() in haystack:
                 return True
-            return bool(re.search(rf"\b{re.escape(dep_name)}\b", haystack))
+            if re.search(rf"\b{re.escape(dep_name)}\b", haystack):
+                return True
+            if dep_path.suffix.lower() == ".py":
+                dep_stem = dep_path.stem.lower()
+                parts = list(dep_path.with_suffix("").parts)
+                if parts and parts[0] == "src":
+                    parts = parts[1:]
+                dep_mod = ".".join(parts).lower()
+                if "." in dep_mod and re.search(rf"\b{re.escape(dep_mod)}\b", haystack):
+                    return True
+                if len(dep_stem) >= 3 and re.search(
+                    rf"\b(?:from\s+{re.escape(dep_stem)}\b|import\s+{re.escape(dep_stem)}\b|{re.escape(dep_stem)}\.)",
+                    haystack,
+                ):
+                    return True
+            return False
 
         deps: dict[int, set[int]] = {i: set() for i in range(n)}
         for i in range(n):

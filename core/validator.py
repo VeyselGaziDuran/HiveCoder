@@ -40,6 +40,7 @@ def _check_brace_balance(source: str) -> Optional[str]:
     while i < n:
         ch = source[i]
         nxt = source[i + 1] if i + 1 < n else ""
+        tri = source[i : i + 3]
         if ch == "\n":
             lineno += 1
             in_line_comment = False
@@ -61,6 +62,13 @@ def _check_brace_balance(source: str) -> Optional[str]:
             if ch == "\\":
                 i += 2
                 continue
+            if len(in_string) == 3:
+                if tri == in_string:
+                    in_string = None
+                    i += 3
+                    continue
+                i += 1
+                continue
             if ch == in_string:
                 in_string = None
             i += 1
@@ -73,9 +81,14 @@ def _check_brace_balance(source: str) -> Optional[str]:
             in_block_comment = True
             i += 2
             continue
+        if tri in ('"""', "'''"):
+            in_string = tri
+            i += 3
+            continue
         if ch in ("'", '"', "`"):
             prev = source[i - 1] if i > 0 else ""
-            if ch == "'" and prev.isalnum() and nxt.isalpha():
+            prev2 = source[i - 2 : i] if i >= 2 else ""
+            if ch == "'" and ((prev.isalnum() and nxt.isalpha()) or (len(prev2) == 2 and prev2.isalnum() and nxt.isspace())):
                 i += 1
                 continue
             in_string = ch
@@ -216,7 +229,7 @@ class Validator:
         output = _tail((proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr.strip() else ""))
         if proc.returncode == 0:
             return ValidationResult(True, "pytest", output.strip(), targets, proc.returncode)
-        if proc.returncode == 5 and not targets:
+        if proc.returncode == 5 and not targets and not self.discover_tests():
             return ValidationResult(True, "pytest", "no tests collected", targets, proc.returncode)
         return ValidationResult(False, "pytest", output.strip(), targets, proc.returncode)
 
