@@ -1,0 +1,111 @@
+"""MedicAgent: isolated fault repair using traceback output and Blackboard signatures."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Optional
+
+from agents.base_agent import AgentResult, BaseAgent, NANO_TAG_INSTRUCTIONS
+from core.blackboard import normalize_relpath
+from core.context_builder import format_task_spec
+from core.llm_client import parse_nano_tags
+from core.state_machine import MicroTask
+
+MEDIC_SYSTEM_PROMPT = """\
+Repair the target file that failed inspection or automated validation (`py_compile` / `pytest`).
+You are given the broken file, the failure traceback or inspection report, and the BLACKBOARD
+AST symbol table.
+
+Constraints:
+1. Identify the root cause from the traceback or inspection report.
+2. Align any mismatched imports or function calls with the signatures on the BLACKBOARD.
+3. Output the complete repaired file using the Nano-Tag format (`<<<FILE_PATH>>>`,
+   `<<<CODE>>>`, `<<<RELAY_NOTE>>>`).
+4. Include a 1-2 sentence <<<RELAY_NOTE>>> summarizing the fix.
+"""
+
+
+class MedicAgent(BaseAgent):
+    role = "MedicAgent"
+    system_prompt = MEDIC_SYSTEM_PROMPT
+
+    def select_patient_file(self, task: MicroTask, error_output: str) -> str:
+        """Pick which workspace file should be repaired based on the traceback."""
+        candidates = list(dict.fromkeys([*task.files_written, task.target_file]))
+        for rel in candidates:
+            if rel in error_output:
+                return rel
+        for match in re.findall(r'([A-Za-z0-9_./-]+\.py)', error_output):
+            try:
+                norm = normalize_relpath(self.workspace, match)
+            except ValueError:
+                continue
+            if (self.workspace / norm).is_file():
+                return norm
+        return task.target_file
+
+    def repair(
+        self,
+        task: MicroTask,
+        error_output: str,
+        broken_file: Optional[str] = None,
+        attempt: int = 1,
+    ) -> AgentResult:
+        """Run an isolated Infirmary repair session for ``broken_file``."""
+        patient = broken_file or self.select_patient_file(task, error_output)
+        patient = normalize_relpath(self.workspace, patient)
+        abs_path = self.workspace / patient
+        current_code = (
+            abs_path.read_text(encoding="utf-8", errors="replace")
+            if abs_path.is_file()
+            else "# (file does not exist yet)\n"
+        )
+
+        spec = format_task_spec(task)
+        memory = self.blackboard.get_compact_memory(target_files=[patient], max_notes=10)
+        naive_chars = self.context_builder.naive_chars() + len(spec)
+
+        user_prompt = (
+            f"# INFIRMARY REPAIR (Attempt {attempt})\n"
+            f"Patient file: {patient}\n\n"
+            f"{spec}\n\n"
+            f"## FAILURE TRACEBACK / INSPECTION REPORT\n"
+            f"```\n{error_output.strip()[-3500:]}\n```\n\n"
+            f"{memory}\n\n"
+            f"## BROKEN FILE CONTENT ({patient})\n"
+            f"<<<CURRENT_FILE>>>\n{current_code}<<<END_CURRENT_FILE>>>\n\n"
+            f"{NANO_TAG_INSTRUCTIONS}"
+        )
+
+        raw, elapsed = self._invoke_isolated(self.system_prompt, user_prompt)
+        parsed = parse_nano_tags(raw)
+        tokens_saved = max(0, (naive_chars - len(user_prompt)) // 4)
+        if not parsed.has_code:
+            return AgentResult(
+                agent_name=self.role,
+                success=False,
+                raw_response=raw,
+                prompt_chars=len(self.system_prompt) + len(user_prompt),
+                response_chars=len(raw),
+                tokens_saved=tokens_saved,
+                elapsed_seconds=elapsed,
+                error="MedicAgent response did not contain a valid <<<CODE>>> block.",
+            )
+
+        written, note = self._materialize_nano_response(
+            parsed=parsed,
+            default_target=patient,
+            task_id=task.id,
+        )
+        return AgentResult(
+            agent_name=self.role,
+            success=True,
+            files_written=written,
+            relay_note=note,
+            raw_response=raw,
+            prompt_chars=len(self.system_prompt) + len(user_prompt),
+            response_chars=len(raw),
+            tokens_saved=tokens_saved,
+            elapsed_seconds=elapsed,
+        )
