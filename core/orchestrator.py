@@ -274,9 +274,15 @@ class HiveOrchestrator:
 
         if not state.micro_tasks:
             self.state_machine.transition(Phase.PLANNING, "resuming at planning phase")
-            plan = architect.plan(state.goal)
-            state.metrics.llm_calls += 1
-            self.state_machine.set_plan(plan)
+            try:
+                plan = architect.plan(state.goal)
+                state.metrics.llm_calls += 1
+                self.state_machine.set_plan(plan)
+            except Exception as exc:  # noqa: BLE001
+                self._emit("error", f"Planning failed during resume: {exc}")
+                self.state_machine.fail(f"Planning failed during resume: {exc}")
+                self.history.append(state)
+                return state
             self.state_machine.transition(Phase.CODING, "plan ready after resume")
         else:
             self.state_machine.transition(Phase.CODING, "resuming micro-task queue")
@@ -550,6 +556,18 @@ class HiveOrchestrator:
             verdict = inspector.inspect(mt, med_result.files_written)
             if inspector.enable_llm_review:
                 state.metrics.llm_calls += 1
+
+            if not verdict.approved and verdict.deterministic_passed and validator.discover_tests():
+                probe_val = validator.validate(mt.files_written, run_tests=True)
+                if probe_val.passed and probe_val.stage == "pytest":
+                    verdict.approved = True
+                    verdict.summary = "Deterministic AST & pytest suite passed after medic (LLM false rejection overridden)."
+                    self._emit(
+                        "inspection_override",
+                        f"[{mt.id}] Overrode post-medic LLM rejection because AST checks and pytest passed.",
+                        micro_id=mt.id,
+                    )
+
             self.state_machine.mark_inspected(mt.id, verdict.approved, verdict.format_feedback())
 
             if not verdict.approved:

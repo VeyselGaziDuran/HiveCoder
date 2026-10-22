@@ -179,7 +179,14 @@ def parse_nano_tags(text: str) -> NanoResponse:
     if not response.files:
         fences = [(lang, body) for lang, body in _FENCE_BLOCK.findall(cleaned) if body.strip()]
         if fences:
-            preferred = [f for f in fences if f[0].lower() in ("python", "py", "")] or fences
+            code_langs = {
+                "python", "py", "typescript", "ts", "tsx", "javascript", "js", "jsx",
+                "dart", "kotlin", "kt", "swift", "json", "html", "css", "scss",
+                "sql", "sh", "bash", "yaml", "yml", "toml",
+            }
+            preferred = [f for f in fences if f[0].lower() in code_langs] or [
+                f for f in fences if f[0] == ""
+            ] or fences
             body = max(preferred, key=lambda f: len(f[1]))[1]
             path = response.tags.get("FILE_PATH", [None])[0]
             response.files.append(FileBlock(path=_clean_path(path) if path else None, code=_normalize_code(body)))

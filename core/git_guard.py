@@ -81,21 +81,29 @@ class GitGuard:
 
     def snapshot(self, label: str) -> Optional[str]:
         """Commit the full workspace state; returns the snapshot sha (or None if disabled)."""
-        if not self.ensure():
+        try:
+            if not self.ensure():
+                return None
+            self._git("add", "-A")
+            self._git("commit", "-q", "--allow-empty", "--no-verify", "-m", f"hive snapshot: {label}")
+            return self._git("rev-parse", "HEAD").stdout.strip()
+        except (GitGuardError, OSError):
             return None
-        self._git("add", "-A")
-        self._git("commit", "-q", "--allow-empty", "--no-verify", "-m", f"hive snapshot: {label}")
-        return self._git("rev-parse", "HEAD").stdout.strip()
 
     def rollback(self, sha: str) -> bool:
         """Restore the workspace to ``sha`` (tracked files reset, new files removed)."""
-        if not self.ensure() or not sha:
+        if not sha:
             return False
-        self._git("cat-file", "-e", f"{sha}^{{commit}}")
-        self._git("add", "-A")
-        self._git("reset", "-q", "--hard", sha)
-        self._git("clean", "-fdq")
-        return True
+        try:
+            if not self.ensure():
+                return False
+            self._git("cat-file", "-e", f"{sha}^{{commit}}")
+            self._git("add", "-A")
+            self._git("reset", "-q", "--hard", sha)
+            self._git("clean", "-fdq")
+            return True
+        except (GitGuardError, OSError):
+            return False
 
     def list_snapshots(self, limit: int = 10) -> list[tuple[str, str]]:
         if not self.enabled or not (self.git_dir / "HEAD").exists():
