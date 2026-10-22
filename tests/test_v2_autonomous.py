@@ -547,3 +547,69 @@ Added test_add() in tests/test_calc.py.
     assert "nonexistent_super_pkg_999" in alert
     assert "NOT installed" in alert
 
+
+def test_deep_audit_base_class_ordering_relative_imports_and_stdlib_probe(tmp_path: Path) -> None:
+    """Verify preserved base classes precede subclasses, root relative imports normalize, and stdlib probe works."""
+    from core.llm_client import parse_nano_tags
+
+    existing = (
+        "from __future__ import annotations\n"
+        "DEFAULT_MULTIPLIER = 10\n\n"
+        "def _scale(x: int) -> int:\n"
+        "    return x * DEFAULT_MULTIPLIER\n\n"
+        "class BaseProcessor:\n"
+        "    def run_base(self, val: int) -> int:\n"
+        "        return _scale(val)\n"
+    )
+    # Incoming code subclasses BaseProcessor and uses DEFAULT_MULTIPLIER without re-defining them!
+    incoming = (
+        "from __future__ import annotations\n"
+        "import math\n\n"
+        "class AdvancedProcessor(BaseProcessor):\n"
+        "    def compute(self, val: int = DEFAULT_MULTIPLIER) -> int:\n"
+        "        return self.run_base(val) + int(math.sqrt(4))\n"
+    )
+    ws = tmp_path / "audit_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "audit_mem", workspace=ws)
+    (ws / "proc.py").write_text(existing, encoding="utf-8")
+    bb.update_file_record("proc.py", agent_note="Base processor", task_id="step-1")
+    bb.lock_verified_symbols(["proc.py"])
+
+    protected = bb.get_verified_symbols("proc.py")
+    assert "_scale" in protected
+    assert "BaseProcessor" in protected
+    assert "DEFAULT_MULTIPLIER" in protected
+
+    merged = ASTPatcher.merge_preserving_symbols(existing, incoming, protected_symbols=protected)
+    ns: dict[str, Any] = {}
+    exec(compile(merged, "<audit_merged>", "exec"), ns)
+    inst = ns["AdvancedProcessor"]()
+    assert inst.compute(3) == 32
+
+    # Root-level relative import normalization
+    norm_code = ASTPatcher.normalize_root_relative_imports("from .utils import helper\n", "app.py")
+    assert norm_code == "from utils import helper\n"
+
+    # Markdown fence fallback for .tsx / .dart
+    fenced_tsx = "Explanation:\n```\nnpm install\n```\n<<<FILE_PATH>>>\nApp.tsx\n<<<END_FILE_PATH>>>\n```tsx\nexport const App = () => null;\n```"
+    parsed = parse_nano_tags(fenced_tsx)
+    assert parsed.has_code is True
+    assert "export const App" in parsed.files[0].code
+
+    # SignatureProbe stdlib traceback inspection
+    sp = SignatureProbe()
+    sigs = sp.inspect_traceback(
+        "import tempfile\n",
+        "ImportError: cannot import name 'wrong_fn' from 'urllib.parse'",
+    )
+    assert any("urllib.parse." in s for s in sigs)
+
+    # ThermalSensor ignores short TTFT-bound responses (< 200 chars)
+    ts = ThermalSensor()
+    ts.record_throughput(elapsed_seconds=1.0, response_chars=1000)
+    assert ts.baseline_chars_per_sec == 1000.0
+    ts.record_throughput(elapsed_seconds=2.0, response_chars=50)
+    assert ts.latest_chars_per_sec == 1000.0
+
+
