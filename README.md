@@ -16,11 +16,11 @@ Instead of passing cumulative chat history across steps, HiveCoder decomposes a 
 
 ### Core Logic
 
-1. **Task Decomposition (`ArchitectAgent`):** Breaks a high-level specification into an ordered queue of single-file micro-tasks (`MicroTask`) ordered by dependency.
+1. **Task Decomposition & Environment Probes (`ArchitectAgent` & `probes/`):** Inspects active Python/package versions (`RuntimeProbe`, `PackageRadarProbe`) and breaks a high-level specification into an ordered queue of single-file micro-tasks (`MicroTask`) ordered by dependency.
 2. **AST-Indexed Shared Memory (`core/blackboard.py`):** Each agent runs in an isolated session with no conversation history. Whenever a file is written, `ast.parse()` extracts class definitions, method/function signatures (`def func(a: int) -> list[dict]`), module constants, and imports into `memory/blackboard.json` alongside a short hand-off note. Downstream agents receive only this interface map and the target file (`core/context_builder.py`).
-3. **Block-Tag Output Format (`core/llm_client.py`):** Rather than embedding multi-line source code inside JSON strings, code-producing agents emit deterministic block delimiters (`<<<FILE_PATH>>>`, `<<<CODE>>>`, `<<<RELAY_NOTE>>>`).
+3. **Surgical AST Merging & Block-Tag Protocol (`core/ast_patcher.py` & `core/llm_client.py`):** Code-producing agents emit deterministic block delimiters (`<<<FILE_PATH>>>`, `<<<CODE>>>`, `<<<RELAY_NOTE>>>`). When updating an existing module, `ASTPatcher` preserves previously verified functions and classes so partial outputs from smaller models cannot overwrite working symbols.
 4. **Static Inspection & Automated Testing (`InspectorAgent` & `Validator`):** Each generated file is checked for AST syntax validity and cross-module import consistency against the Blackboard, followed by `py_compile` and `pytest` execution with automatic `PYTHONPATH` injection.
-5. **Isolated Fault Repair (`MedicAgent`) & Rollback (`GitGuard`):** If inspection or test execution fails, `MedicAgent` receives only the failing file, traceback output, and the Blackboard interface summary to repair the module. Unrecoverable steps are rolled back to their pre-step snapshot.
+5. **Isolated Fault Repair (`MedicAgent`), Rollback (`GitGuard`) & Ephemeral Lifecycle (`MemoryLifecycle`):** If inspection or test execution fails, `MedicAgent` receives the failing file, extracted traceback line windows, real callable signatures (`SignatureProbe`), and the Blackboard summary. Unrecoverable steps are rolled back to their pre-step snapshot and their temporary notes are purged. Upon full task completion, all transient notes, snapshots, and caches are flushed automatically.
 
 ### Installation
 
@@ -150,11 +150,11 @@ Ajanlar arasında sohbet geçmişi taşımak yerine her adımı tek dosyalık at
 
 ### Çalışma Mantığı
 
-1. **Görev Ayrıştırma (`ArchitectAgent`):** Kullanıcıdan alınan hedefi bağımlılık sırasına göre tek dosyalık mikro-görev kuyruğuna (`MicroTask`) dönüştürür.
+1. **Görev Ayrıştırma ve Ortam Sondaları (`ArchitectAgent` & `probes/`):** Aktif Python ve paket sürümlerini (`RuntimeProbe`, `PackageRadarProbe`) tespit eder ve hedefi bağımlılık sırasına göre tek dosyalık mikro-görev kuyruğuna (`MicroTask`) dönüştürür.
 2. **AST Tabanlı Ortak Hafıza (`core/blackboard.py`):** Her ajan sıfır sohbet geçmişiyle çalışır. Bir dosya yazıldığında `ast.parse()` ile içindeki sınıf, metot/fonksiyon imzaları (`def func(a: int) -> list[dict]`), sabitler ve importlar çıkarılarak `memory/blackboard.json` içine kaydedilir. Sıradaki ajan tüm projeyi okumak yerine yalnızca bu arayüz haritasını ve hedef dosyayı alır (`core/context_builder.py`).
-3. **Blok Etiket Çıktı Protokolü (`core/llm_client.py`):** Çok satırlı kaynak kodları JSON içine sıkıştırmak yerine deterministik blok etiketleri (`<<<FILE_PATH>>>`, `<<<CODE>>>`, `<<<RELAY_NOTE>>>`) kullanılır.
+3. **Cerrahi AST Birleştirme ve Blok Etiket Protokolü (`core/ast_patcher.py` & `core/llm_client.py`):** Kod üreten ajanlar deterministik blok etiketleri (`<<<FILE_PATH>>>`, `<<<CODE>>>`, `<<<RELAY_NOTE>>>`) kullanır. Mevcut bir dosya güncellenirken `ASTPatcher`, daha önce doğrulanmış sınıf ve fonksiyonları koruyarak küçük modellerin çalışan kodları silmesini engeller.
 4. **Statik Denetim ve Otomatik Test (`InspectorAgent` & `Validator`):** Üretilen her dosya önce AST sözdizimi ve modüller arası import tutarlılığı açısından denetlenir, ardından `PYTHONPATH` otomatik enjekte edilerek `py_compile` ve `pytest` çalıştırılır.
-5. **İzole Hata Onarımı (`MedicAgent`) ve Geri Sarma (`GitGuard`):** Doğrulamadan geçemeyen dosyalar yalnızca hata çıktısı (`traceback`) ve Blackboard arayüz özetiyle onarım döngüsüne alınır. Onarılamayan adımlar görev öncesi alınan izole snapshot'a geri sarılır.
+5. **İzole Hata Onarımı (`MedicAgent`), Geri Sarma (`GitGuard`) ve Geçici Hafıza Temizliği (`MemoryLifecycle`):** Doğrulamadan geçemeyen dosyalar yalnızca hata satırı penceresi, gerçek fonksiyon imzaları (`SignatureProbe`) ve Blackboard arayüz özetiyle onarım döngüsüne alınır. Onarılamayan adımlar görev öncesi snapshot'a geri sarılır ve geçici notları silinir. Görev tamamlandığında tüm geçici devir notları, snapshot'lar ve önbellekler otomatik olarak temizlenir.
 
 ### Kurulum
 
@@ -253,12 +253,18 @@ HiveCoder/
 ├── core/
 │   ├── orchestrator.py      # Task execution & verification pipeline
 │   ├── blackboard.py        # AST interface extraction & relay notes
+│   ├── ast_patcher.py       # Surgical AST merging & traceback window extractor
+│   ├── memory_lifecycle.py  # Ephemeral note & snapshot lifecycle manager
 │   ├── context_builder.py   # Target file + Blackboard prompt builder
 │   ├── llm_client.py        # Ollama / API client & block-tag parser
 │   ├── state_machine.py     # State transitions & crash-safe resume
 │   ├── validator.py         # py_compile & pytest runner with PYTHONPATH injection
 │   ├── git_guard.py         # Isolated snapshot & rollback manager
 │   └── garbage_collector.py # Temporary file & cache cleanup
+├── probes/
+│   ├── runtime_probe.py     # Active Python & installed package inspector
+│   ├── package_radar.py     # Live PyPI version lookup with offline fallback
+│   └── signature_probe.py   # Real callable signature & docstring extractor
 ├── agents/
 │   ├── architect_agent.py   # Task decomposition agent
 │   ├── coder_agent.py       # Module implementation agent

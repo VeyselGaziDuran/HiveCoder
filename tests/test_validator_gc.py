@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from core.config import DEFAULT_CONFIG
 from core.garbage_collector import GarbageCollector
@@ -95,7 +95,7 @@ class ScriptedLLMClient(LLMClient):
         self.scripted_replies = list(scripted_replies)
         self.prompts_seen: list[tuple[str, str]] = []
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(self, system: str, user: str, temperature: Optional[float] = None) -> str:
         self.prompts_seen.append((system, user))
         self.stats.calls += 1
         self.stats.prompt_chars += len(system) + len(user)
