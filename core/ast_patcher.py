@@ -69,17 +69,17 @@ def _top_level_symbol_name(node: ast.stmt) -> Optional[str]:
     return names[0] if names else None
 
 
-def _imported_bound_names(node: ast.stmt) -> set[str]:
+def _raw_imported_bound_names(node: ast.stmt) -> set[str]:
     if isinstance(node, ast.Import):
         return {(a.asname or a.name.split(".")[0]) for a in node.names}
     if isinstance(node, ast.ImportFrom):
         return {(a.asname or a.name) for a in node.names if a.name != "*"}
-    if isinstance(node, ast.If) and not _is_main_guard(node) and not _node_symbol_names(node):
+    if isinstance(node, ast.If) and not _is_main_guard(node):
         if_bound: set[str] = set()
         for sub in (*node.body, *node.orelse):
-            if_bound.update(_imported_bound_names(sub))
+            if_bound.update(_raw_imported_bound_names(sub))
         return if_bound
-    if isinstance(node, ast.Try) and not _node_symbol_names(node):
+    if isinstance(node, ast.Try):
         bound: set[str] = set()
         for sub in (
             *node.body,
@@ -87,13 +87,34 @@ def _imported_bound_names(node: ast.stmt) -> set[str]:
             *node.orelse,
             *node.finalbody,
         ):
-            bound.update(_imported_bound_names(sub))
+            bound.update(_raw_imported_bound_names(sub))
         return bound
-    if isinstance(node, ast.With) and not _node_symbol_names(node):
+    if isinstance(node, ast.With):
         with_bound: set[str] = set()
         for sub in node.body:
-            with_bound.update(_imported_bound_names(sub))
+            with_bound.update(_raw_imported_bound_names(sub))
         return with_bound
+    return set()
+
+
+def _is_import_guard_block(node: ast.stmt) -> bool:
+    if not (
+        isinstance(node, (ast.Try, ast.With))
+        or (isinstance(node, ast.If) and not _is_main_guard(node))
+    ):
+        return False
+    imp_bound = _raw_imported_bound_names(node)
+    if not imp_bound:
+        return False
+    for child in ast.walk(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return False
+    return set(_node_symbol_names(node)).issubset(imp_bound)
+
+
+def _imported_bound_names(node: ast.stmt) -> set[str]:
+    if isinstance(node, (ast.Import, ast.ImportFrom)) or _is_import_guard_block(node):
+        return _raw_imported_bound_names(node)
     return set()
 
 
@@ -291,10 +312,7 @@ class ASTPatcher:
                     if not bound or not bound.issubset(existing_working_names):
                         preserved_imports.append(imp_key)
                 continue
-            if (
-                isinstance(node, (ast.Try, ast.With))
-                or (isinstance(node, ast.If) and not _is_main_guard(node))
-            ) and not _node_symbol_names(node):
+            if _is_import_guard_block(node):
                 bound = _imported_bound_names(node)
                 if bound and not bound.issubset(existing_working_names):
                     start, end = _node_line_range(node)
@@ -309,7 +327,7 @@ class ASTPatcher:
                 if snippet:
                     preserved_blocks.append(snippet)
 
-        if not preserved_blocks and not methods_restored:
+        if not preserved_blocks and not (missing_top and preserved_imports) and not methods_restored:
             return incoming_source
 
         # Find safe header boundary (docstring + __future__) and leading imports in working_tree
@@ -331,7 +349,7 @@ class ASTPatcher:
                 imports_end_line = future_end_line
                 continue
             in_future_phase = False
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if isinstance(node, (ast.Import, ast.ImportFrom)) or _is_import_guard_block(node):
                 imports_end_line = int(node.end_lineno or node.lineno)
                 continue
             break

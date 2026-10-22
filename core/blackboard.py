@@ -227,12 +227,17 @@ def extract_python_summary(source: str) -> dict[str, Any]:
     summary["imports"] = list(dict.fromkeys(summary["imports"]))
     summary["functions"] = list(dict.fromkeys(summary["functions"]))
     summary["globals"] = list(dict.fromkeys(summary["globals"]))
-    seen_cls: set[str] = set()
+    seen_cls: dict[str, dict[str, Any]] = {}
     unique_cls: list[dict[str, Any]] = []
     for cls in summary["classes"]:
-        if cls["name"] not in seen_cls:
-            seen_cls.add(cls["name"])
+        existing_cls = seen_cls.get(cls["name"])
+        if existing_cls is None:
+            seen_cls[cls["name"]] = cls
             unique_cls.append(cls)
+        else:
+            existing_cls["bases"] = list(dict.fromkeys([*existing_cls["bases"], *cls["bases"]]))
+            existing_cls["methods"] = list(dict.fromkeys([*existing_cls["methods"], *cls["methods"]]))
+            existing_cls["attributes"] = list(dict.fromkeys([*existing_cls["attributes"], *cls["attributes"]]))
     summary["classes"] = unique_cls
     return summary
 
@@ -348,10 +353,14 @@ def defined_names(record: dict[str, Any]) -> set[str]:
             imported = imp.split(" import ", 1)[1]
             for part in imported.split(","):
                 part = part.strip()
-                names.add(part.split(" as ")[-1].strip())
+                sym = part.split(" as ")[-1].strip()
+                if sym and sym != "*":
+                    names.add(sym)
         else:
             first = imp.split(" as ")
-            names.add(first[-1].strip().split(".")[0])
+            sym = first[-1].strip().split(".")[0]
+            if sym and sym != "*":
+                names.add(sym)
     return names
 
 
@@ -693,10 +702,47 @@ class Blackboard:
         for imp in record.get("summary", {}).get("imports", []):
             if imp.startswith("from "):
                 for part in imp.split(" import ", 1)[1].split(","):
-                    names.add(part.strip().split(" as ")[-1].strip())
+                    sym = part.strip().split(" as ")[-1].strip()
+                    if sym and sym != "*":
+                        names.add(sym)
             else:
-                names.add(imp.split(" as ")[-1].strip().split(".")[0])
+                sym = imp.split(" as ")[-1].strip().split(".")[0]
+                if sym and sym != "*":
+                    names.add(sym)
         return names
+
+    def _available_names(
+        self,
+        mod_path: str,
+        record: dict[str, Any],
+        _visited: Optional[set[str]] = None,
+    ) -> set[str]:
+        visited = _visited if _visited is not None else set()
+        if mod_path in visited:
+            return set()
+        visited.add(mod_path)
+        available = defined_names(record)
+        pkg_parts = list(PurePosixPath(mod_path).parent.parts)
+        for imp in record.get("summary", {}).get("imports", []):
+            if not imp.startswith("from ") or " import " not in imp:
+                continue
+            raw_mod, imported = imp[5:].split(" import ", 1)
+            if "*" not in {p.strip() for p in imported.split(",")}:
+                continue
+            raw_mod = raw_mod.strip()
+            level = len(raw_mod) - len(raw_mod.lstrip("."))
+            target_mod = raw_mod.lstrip(".")
+            if level > 0:
+                keep_depth = len(pkg_parts) - (level - 1)
+                if keep_depth < 0:
+                    continue
+                base = pkg_parts[:keep_depth]
+                target_mod = ".".join([*base, target_mod] if target_mod else base)
+            found = self._module_record(target_mod) if target_mod else None
+            if found is not None:
+                sub_path, sub_record = found
+                available |= self._available_names(sub_path, sub_record, visited)
+        return available
 
     def workspace_chars(self) -> int:
         """Total characters of indexed files: what a naive agent would have to read."""
@@ -810,7 +856,7 @@ class Blackboard:
                 mod_path, record = found
                 if record.get("summary", {}).get("syntax_error"):
                     continue
-                available = defined_names(record)
+                available = self._available_names(mod_path, record)
                 for alias in node.names:
                     if alias.name == "*":
                         continue
@@ -864,7 +910,7 @@ class Blackboard:
                 mod_path, record = found
                 if record.get("summary", {}).get("syntax_error"):
                     continue
-                available = defined_names(record)
+                available = self._available_names(mod_path, record)
                 sub_attr = f"{module}.{node.attr}"
                 if node.attr in available or self._module_record(sub_attr) or self._is_package(sub_attr):
                     continue

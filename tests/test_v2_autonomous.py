@@ -1214,3 +1214,61 @@ def test_cycle_18_with_suppress_import_preservation_and_aliased_submodule_check(
     assert "p.submod.missing_fn" in issues[0].message
 
 
+def test_cycle_19_star_reexport_resolution_conditional_class_merge_and_working_import_order(tmp_path: Path) -> None:
+    """Verify star re-exports in __init__.py, conditional class union in Blackboard, and working import block order."""
+    # 1. Working tree has a leading try/except import followed by 'import math' used at module load by a preserved constant
+    old_src = (
+        "import math\n"
+        "TAU_CONST = math.pi * 2\n"
+    )
+    new_src = (
+        "try:\n"
+        "    import non_existent_mod as opt_mod\n"
+        "except ImportError:\n"
+        "    opt_mod = None\n"
+        "import math\n\n"
+        "def circle_area(r: float) -> float:\n"
+        "    return math.pi * r * r\n"
+    )
+    merged = ASTPatcher.merge_preserving_symbols(old_src, new_src, protected_symbols={"TAU_CONST"})
+    ns: dict[str, Any] = {}
+    exec(compile(merged, "<cycle19_merged>", "exec"), ns)
+    assert round(ns["TAU_CONST"], 2) == 6.28
+    assert round(ns["circle_area"](2.0), 2) == 12.57
+
+    # 2. Star re-export in pkg/__init__.py (from .core import *) and conditional class branch merging
+    ws = tmp_path / "cycle19_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle19_mem", workspace=ws)
+    pkg = ws / "pkg"
+    pkg.mkdir()
+    (pkg / "core.py").write_text(
+        "import sys\n"
+        "if sys.platform == 'darwin':\n"
+        "    class Driver:\n"
+        "        def start_mac(self) -> str:\n"
+        "            return 'mac'\n"
+        "else:\n"
+        "    class Driver:\n"
+        "        def start_posix(self) -> str:\n"
+        "            return 'posix'\n\n"
+        "def exported_helper() -> int:\n"
+        "    return 42\n",
+        encoding="utf-8",
+    )
+    (pkg / "__init__.py").write_text("from .core import *\n", encoding="utf-8")
+    (ws / "app.py").write_text(
+        "from pkg import exported_helper, Driver\n"
+        "def main() -> int:\n"
+        "    return exported_helper()\n",
+        encoding="utf-8",
+    )
+    bb.scan_workspace()
+    assert bb.check_import_consistency("app.py") == []
+    bb.lock_verified_symbols(["pkg/core.py"])
+    verified = bb.get_verified_symbols("pkg/core.py")
+    assert "Driver.start_mac" in verified
+    assert "Driver.start_posix" in verified
+
+
+
