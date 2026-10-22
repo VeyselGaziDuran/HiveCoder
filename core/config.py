@@ -37,9 +37,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_retries": 3,
     },
     "thermal": {
-        "profile": "eco",
+        "profile": "adaptive",
+        "sensor_enabled": True,
+        "early_wakeup": True,
         "unload_model_on_cooldown": True,
         "profiles": {
+            "adaptive": {
+                "micro_pause_seconds": 1,
+                "cooldown_every_tasks": 0,
+                "cooldown_seconds": 300,
+                "max_continuous_work_seconds": 0,
+            },
             "eco": {
                 "micro_pause_seconds": 10,
                 "cooldown_every_tasks": 3,
@@ -67,6 +75,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_context_chars": 14000,
         "max_relay_notes_in_context": 12,
         "pytest_timeout_seconds": 180,
+    },
+    "memory_lifecycle": {
+        "flush_notes_on_complete": True,
+        "remove_state_on_complete": True,
+        "remove_snapshots_on_complete": True,
+    },
+    "probes": {
+        "enabled": True,
+        "online_package_radar": True,
+        "radar_timeout_seconds": 2.0,
     },
     "agents": {"llm_inspector": True},
     "git_guard": {"enabled": True},
