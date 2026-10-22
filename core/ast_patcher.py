@@ -67,6 +67,16 @@ def _imported_bound_names(node: ast.stmt) -> set[str]:
         return {(a.asname or a.name.split(".")[0]) for a in node.names}
     if isinstance(node, ast.ImportFrom):
         return {(a.asname or a.name) for a in node.names if a.name != "*"}
+    if isinstance(node, ast.Try) and not _node_symbol_names(node):
+        bound: set[str] = set()
+        for sub in (
+            *node.body,
+            *(s for h in node.handlers for s in h.body),
+            *node.orelse,
+            *node.finalbody,
+        ):
+            bound.update(_imported_bound_names(sub))
+        return bound
     return set()
 
 
@@ -180,8 +190,13 @@ class ASTPatcher:
                 for item in new_cls.body
                 for name in _node_symbol_names(item)
             }
-            body_indent = int(getattr(new_cls.body[0], "col_offset", new_cls.col_offset + 4)) if new_cls.body else (new_cls.col_offset + 4)
-            indent_prefix = " " * max(4, body_indent)
+            raw_indent = (
+                int(getattr(new_cls.body[0], "col_offset", new_cls.col_offset + 4))
+                if new_cls.body
+                else (new_cls.col_offset + 4)
+            )
+            body_indent = raw_indent if raw_indent > new_cls.col_offset else (new_cls.col_offset + 4)
+            indent_prefix = " " * body_indent
             missing_attr_snippets: list[str] = []
             missing_method_snippets: list[str] = []
             for item in old_cls.body:
@@ -258,6 +273,14 @@ class ASTPatcher:
                     bound = _imported_bound_names(node)
                     if not bound or not bound.issubset(existing_working_names):
                         preserved_imports.append(imp_key)
+                continue
+            if isinstance(node, ast.Try) and not _node_symbol_names(node):
+                bound = _imported_bound_names(node)
+                if bound and not bound.issubset(existing_working_names):
+                    start, end = _node_line_range(node)
+                    snippet = "\n".join(old_lines[start:end]).rstrip()
+                    if snippet:
+                        preserved_imports.append(snippet)
                 continue
             node_syms = _node_symbol_names(node)
             if node_syms and any(s in missing_top for s in node_syms):

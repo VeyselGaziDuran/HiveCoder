@@ -1028,6 +1028,40 @@ def test_cycle_13_class_docstring_decorated_method_attr_merge_and_conditional_to
     assert ns["load_driver"]() == "native"
 
 
+def test_cycle_14_two_space_class_indent_and_try_except_import_preservation() -> None:
+    """Verify 2-space indented classes merge attributes/methods without IndentationError and try/except imports survive."""
+    existing_src = (
+        "try:\n"
+        "    import non_existent_fast_json as json_mod\n"
+        "except ImportError:\n"
+        "    import json as json_mod\n\n"
+        "def decode_obj(raw: str) -> dict:\n"
+        "    return json_mod.loads(raw)\n\n"
+        "class CompactBox:\n"
+        "    TAG = 'v1'\n"
+        "    def tag_name(self) -> str:\n"
+        "        return self.TAG\n"
+    )
+    # Small model emits 2-space indentation in CompactBox and omits TAG, tag_name(), decode_obj(), and try/except import
+    incoming_src = (
+        "class CompactBox:\n"
+        "  def extra(self) -> str:\n"
+        "    return self.TAG + ':extra'\n"
+    )
+    merged = ASTPatcher.merge_preserving_symbols(
+        existing_src,
+        incoming_src,
+        protected_symbols={"decode_obj", "CompactBox", "CompactBox.TAG", "CompactBox.tag_name"},
+    )
+    ns: dict[str, Any] = {}
+    exec(compile(merged, "<cycle14_merged>", "exec"), ns)
+    box = ns["CompactBox"]()
+    assert box.tag_name() == "v1"
+    assert box.extra() == "v1:extra"
+    assert ns["decode_obj"]('{"k": 9}') == {"k": 9}
+
+
+
 
 
 
