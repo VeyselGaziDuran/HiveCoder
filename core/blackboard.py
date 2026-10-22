@@ -119,6 +119,23 @@ def _short_value(node: ast.AST, limit: int = 48) -> str:
     return text if len(text) <= limit else ""
 
 
+def _iter_module_statements(body: list[ast.stmt]) -> list[ast.stmt]:
+    """Yield module-level statements, including those inside top-level ``if`` and ``try`` blocks."""
+    out: list[ast.stmt] = []
+    for node in body:
+        out.append(node)
+        if isinstance(node, ast.If):
+            out.extend(_iter_module_statements(node.body))
+            out.extend(_iter_module_statements(node.orelse))
+        elif isinstance(node, ast.Try):
+            out.extend(_iter_module_statements(node.body))
+            for handler in node.handlers:
+                out.extend(_iter_module_statements(handler.body))
+            out.extend(_iter_module_statements(node.orelse))
+            out.extend(_iter_module_statements(node.finalbody))
+    return out
+
+
 def extract_python_summary(source: str) -> dict[str, Any]:
     """Extract the public surface of a Python module deterministically."""
     summary: dict[str, Any] = {
@@ -147,7 +164,7 @@ def extract_python_summary(source: str) -> dict[str, Any]:
     if doc:
         summary["docstring"] = doc.strip().splitlines()[0][:160]
 
-    for node in tree.body:
+    for node in _iter_module_statements(tree.body):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 summary["imports"].append(alias.name + (f" as {alias.asname}" if alias.asname else ""))
@@ -683,16 +700,22 @@ class Blackboard:
             if isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 if node.level:
-                    if not package_parts:
+                    effective_parts = (
+                        package_parts[1:]
+                        if (package_parts and package_parts[0] == "src")
+                        else package_parts
+                    )
+                    if not effective_parts or node.level > len(effective_parts):
                         issues.append(
                             ConsistencyIssue(
                                 rel,
                                 node.lineno,
-                                f"Relative import 'from {'.' * node.level}{module} import ...' is invalid in top-level module '{rel}'; use absolute import.",
+                                f"Relative import 'from {'.' * node.level}{module} import ...' goes beyond top-level package in '{rel}'; use absolute import.",
                             )
                         )
                         continue
-                    base = package_parts[: len(package_parts) - (node.level - 1)] if node.level > 1 else package_parts
+                    keep_depth = len( package_parts) - (node.level - 1)
+                    base = package_parts[:keep_depth]
                     module = ".".join([*base, module] if module else base)
                 found = self._module_record(module) if module else None
                 if found is None:

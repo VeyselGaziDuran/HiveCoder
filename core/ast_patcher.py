@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import re
+import textwrap
 from typing import Iterable, Optional
 
 
@@ -135,28 +136,41 @@ class ASTPatcher:
         methods_restored = False
         for new_cls in sorted(new_classes, key=lambda c: int(c.end_lineno or c.lineno), reverse=True):
             old_cls = old_classes[new_cls.name]
-            new_method_names = {
-                item.name
+            new_member_names = {
+                name
                 for item in new_cls.body
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                if (name := _top_level_symbol_name(item)) is not None
             }
+            body_indent = int(getattr(new_cls.body[0], "col_offset", new_cls.col_offset + 4)) if new_cls.body else (new_cls.col_offset + 4)
+            indent_prefix = " " * max(4, body_indent)
+            missing_attr_snippets: list[str] = []
             missing_method_snippets: list[str] = []
             for item in old_cls.body:
-                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                member_name = _top_level_symbol_name(item)
+                if not member_name:
                     continue
-                qualified = f"{new_cls.name}.{item.name}"
+                qualified = f"{new_cls.name}.{member_name}"
                 is_protected = qualified in protected or (
-                    new_cls.name in protected and not (item.name.startswith("__") and item.name.endswith("__") and item.name != "__init__")
+                    new_cls.name in protected
+                    and not (member_name.startswith("__") and member_name.endswith("__") and member_name != "__init__")
                 )
-                if is_protected and item.name not in new_method_names:
+                if is_protected and member_name not in new_member_names:
                     m_start, m_end = _node_line_range(item)
-                    snippet = "\n".join(old_lines[m_start:m_end]).rstrip()
-                    if snippet:
-                        missing_method_snippets.append(snippet)
-            if missing_method_snippets:
-                insert_idx = int(new_cls.end_lineno or new_cls.lineno)
-                injected = [""] + missing_method_snippets
-                working_lines[insert_idx:insert_idx] = "\n".join(injected).splitlines()
+                    raw_snippet = "\n".join(old_lines[m_start:m_end]).rstrip()
+                    if raw_snippet:
+                        reindented = textwrap.indent(textwrap.dedent(raw_snippet), indent_prefix)
+                        if isinstance(item, (ast.Assign, ast.AnnAssign)):
+                            missing_attr_snippets.append(reindented)
+                        else:
+                            missing_method_snippets.append(reindented)
+            if missing_attr_snippets or missing_method_snippets:
+                if missing_method_snippets:
+                    insert_idx = int(new_cls.end_lineno or new_cls.lineno)
+                    injected = [""] + missing_method_snippets
+                    working_lines[insert_idx:insert_idx] = "\n".join(injected).splitlines()
+                if missing_attr_snippets:
+                    cls_header_end = int(new_cls.body[0].lineno - 1) if new_cls.body else int(new_cls.lineno)
+                    working_lines[cls_header_end:cls_header_end] = "\n".join(missing_attr_snippets).splitlines()
                 methods_restored = True
 
         working_source = "\n".join(working_lines) + ("\n" if incoming_source.endswith("\n") else "")

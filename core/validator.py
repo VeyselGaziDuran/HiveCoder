@@ -42,6 +42,8 @@ def _check_brace_balance(source: str) -> Optional[str]:
         if ch == "\n":
             lineno += 1
             in_line_comment = False
+            if in_string in ("'", '"'):
+                in_string = None
             i += 1
             continue
         if in_line_comment:
@@ -71,6 +73,10 @@ def _check_brace_balance(source: str) -> Optional[str]:
             i += 2
             continue
         if ch in ("'", '"', "`"):
+            prev = source[i - 1] if i > 0 else ""
+            if ch == "'" and prev.isalnum() and nxt.isalpha():
+                i += 1
+                continue
             in_string = ch
             i += 1
             continue
