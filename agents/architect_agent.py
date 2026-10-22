@@ -119,7 +119,14 @@ class ArchitectAgent(BaseAgent):
                 or item.get("file")
                 or item.get("path")
                 or f"module_{idx}.py"
-            )
+            ).strip()
+            if raw_target.startswith(("/", "\\")):
+                first_part = Path(raw_target.lstrip("/\\")).parts[0] if Path(raw_target.lstrip("/\\")).parts else ""
+                if first_part not in {
+                    "etc", "usr", "var", "tmp", "bin", "sbin", "dev", "proc",
+                    "sys", "root", "Users", "home", "private", "Library", "System", "Windows",
+                }:
+                    raw_target = raw_target.lstrip("/\\")
             target_file = normalize_relpath(self.workspace, raw_target)
             raw_id = str(item.get("id") or f"step-{idx}").strip()
             raw_id = re.sub(r"[^A-Za-z0-9_-]+", "-", raw_id).strip("-") or f"step-{idx}"
@@ -157,8 +164,8 @@ class ArchitectAgent(BaseAgent):
         if not tasks:
             raise ValueError("ArchitectAgent produced an empty plan")
 
-        # Ensure implementation tasks execute before test tasks (stable sort preserves internal order)
-        tasks.sort(key=lambda mt: 1 if mt.kind == "test" else 0)
+        # Ensure implementation tasks execute in dependency order before test tasks
+        tasks = self._topological_sort_tasks(tasks)
 
         # Auto-inject a pytest verification task if Python modules exist without any test micro-task
         has_test = any(mt.kind == "test" for mt in tasks)
@@ -184,3 +191,43 @@ class ArchitectAgent(BaseAgent):
             )
 
         return tasks
+
+    @staticmethod
+    def _topological_sort_tasks(tasks: list[MicroTask]) -> list[MicroTask]:
+        """Order code micro-tasks so referenced dependency files are created before their importers."""
+        code_tasks = [t for t in tasks if t.kind != "test"]
+        test_tasks = [t for t in tasks if t.kind == "test"]
+        n = len(code_tasks)
+        if n <= 1:
+            return code_tasks + test_tasks
+
+        def _mentions_file(src: MicroTask, dep: MicroTask) -> bool:
+            dep_name = Path(dep.target_file).name.lower()
+            if dep_name == "__init__.py":
+                return False
+            haystack = f"{src.title} {src.description} {' '.join(src.acceptance)}".lower()
+            if dep.target_file.lower() in haystack:
+                return True
+            return bool(re.search(rf"\b{re.escape(dep_name)}\b", haystack))
+
+        deps: dict[int, set[int]] = {i: set() for i in range(n)}
+        for i in range(n):
+            for j in range(i + 1, n):
+                if code_tasks[i].target_file == code_tasks[j].target_file:
+                    deps[j].add(i)
+
+        for i in range(n):
+            for j in range(n):
+                if i == j or code_tasks[i].target_file == code_tasks[j].target_file:
+                    continue
+                if _mentions_file(code_tasks[i], code_tasks[j]) and not _mentions_file(code_tasks[j], code_tasks[i]):
+                    deps[i].add(j)
+
+        ordered: list[MicroTask] = []
+        remaining = set(range(n))
+        while remaining:
+            ready = [idx for idx in sorted(remaining) if not (deps[idx] & remaining)]
+            pick = ready[0] if ready else min(remaining)
+            ordered.append(code_tasks[pick])
+            remaining.remove(pick)
+        return ordered + test_tasks

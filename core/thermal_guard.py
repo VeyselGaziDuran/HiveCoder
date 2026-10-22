@@ -269,7 +269,7 @@ class ThermalGuard:
                     self._event("thermal", "cooldown cut short (turbo profile)")
                     break
                 if early_wakeup_enabled and self.sensor is not None and ticks >= 1:
-                    reading = self.sensor.read()
+                    reading = self.sensor.read(polling_cooldown=True)
                     if not reading.is_hot:
                         self.early_wakeups += 1
                         self._event(

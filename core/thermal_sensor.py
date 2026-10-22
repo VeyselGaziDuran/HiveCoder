@@ -90,7 +90,7 @@ class ThermalSensor:
         """Clear latest throttled speed after a cooldown finishes."""
         self.latest_chars_per_sec = self.baseline_chars_per_sec
 
-    def read(self) -> ThermalReading:
+    def read(self, polling_cooldown: bool = False) -> ThermalReading:
         """Return the current :class:`ThermalReading`."""
         if self.probe_fn is not None:
             custom = self.probe_fn()
@@ -100,7 +100,7 @@ class ThermalSensor:
         temp_c = self._read_temperature_celsius()
         os_level = self._read_macos_thermal_pressure()
         load_ratio = self._read_cpu_load_ratio()
-        speed_ratio = self._throughput_ratio()
+        speed_ratio = 1.0 if polling_cooldown else self._throughput_ratio()
 
         # 1. Check heavy conditions (10-minute max cooldown)
         if temp_c is not None and temp_c >= self.heavy_temp_c:

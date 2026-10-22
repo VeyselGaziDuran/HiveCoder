@@ -74,6 +74,10 @@ class GitGuard:
         if self.workspace in self.git_dir.parents:
             rel_store = self.git_dir.parent.relative_to(self.workspace).as_posix()
             excludes.append(f"/{rel_store}/")
+            mem_parent = self.git_dir.parent.parent
+            if self.workspace in mem_parent.parents:
+                rel_mem = mem_parent.relative_to(self.workspace).as_posix()
+                excludes.append(f"/{rel_mem}/")
         info = self.git_dir / "info"
         info.mkdir(parents=True, exist_ok=True)
         (info / "exclude").write_text("\n".join(excludes) + "\n", encoding="utf-8")
