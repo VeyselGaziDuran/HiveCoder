@@ -31,8 +31,13 @@ IGNORED_DIRS: frozenset[str] = frozenset(
 TEXT_SUFFIXES: frozenset[str] = frozenset(
     {
         ".py", ".json", ".md", ".txt", ".toml", ".yaml", ".yml", ".cfg", ".ini",
-        ".html", ".css", ".js", ".ts", ".sql", ".sh", ".csv", ".env.example", ".xml",
+        ".html", ".css", ".scss", ".js", ".jsx", ".ts", ".tsx", ".dart", ".kt",
+        ".swift", ".vue", ".gradle", ".plist", ".sql", ".sh", ".csv",
+        ".env.example", ".xml",
     }
+)
+CODE_SUFFIXES: frozenset[str] = frozenset(
+    {".js", ".jsx", ".ts", ".tsx", ".dart", ".kt", ".swift"}
 )
 MAX_SCAN_BYTES = 512_000
 STUB_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -206,6 +211,56 @@ def describe_json_schema(value: Any, depth: int = 0, max_depth: int = 3) -> str:
     return "null"
 
 
+def extract_code_summary(content: str) -> dict[str, Any]:
+    """Extract classes, interfaces, functions, and imports for JS/TS/React/Flutter/Kotlin/Swift files."""
+    imports: list[str] = []
+    classes: list[str] = []
+    functions: list[str] = []
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//") or stripped.startswith("/*"):
+            continue
+        if stripped.startswith("import "):
+            imports.append(stripped.rstrip(";"))
+            continue
+        cls_match = re.match(
+            r"^(?:export\s+)?(?:default\s+)?(?:abstract\s+|final\s+|sealed\s+|data\s+)?"
+            r"(class|interface|type|enum|mixin|struct|extension)\s+([A-Za-z_]\w*(?:<[^>]+>)?(?:\s+(?:extends|implements|with)\s+[^{;=]+)?)",
+            stripped,
+        )
+        if cls_match:
+            classes.append(f"{cls_match.group(1)} {cls_match.group(2).strip()}")
+            continue
+        fn_match = re.match(
+            r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|fun|func)\s+([A-Za-z_]\w*\s*(?:<[^>]+>)?\s*\([^)]*\)(?:\s*(?:->|:)\s*[^{;=]+)?)",
+            stripped,
+        )
+        if fn_match:
+            functions.append(f"fn {fn_match.group(1).strip()}")
+            continue
+        arrow_match = re.match(
+            r"^(?:export\s+)?(?:const|let|final)\s+([A-Za-z_]\w*)\s*(?::\s*[^=]+)?=\s*(?:async\s*)?(\([^)]*\)\s*(?::\s*[^=]+)?=>)",
+            stripped,
+        )
+        if arrow_match:
+            functions.append(f"const {arrow_match.group(1)} = {arrow_match.group(2).strip()}")
+            continue
+        dart_fn = re.match(
+            r"^(?:Future<[^>]+>|Stream<[^>]+>|Widget|void|int|double|bool|String|List<[^>]+>|Map<[^>]+>|[A-Z]\w*)\s+([a-z_]\w*\s*\([^)]*\))(?:\s*async)?\s*\{",
+            stripped,
+        )
+        if dart_fn:
+            functions.append(f"fn {dart_fn.group(1).strip()}")
+
+    return {
+        "imports": imports[:20],
+        "classes": classes[:30],
+        "functions": functions[:40],
+        "preview": _preview(content),
+    }
+
+
 def extract_file_summary(rel_path: str, content: str) -> tuple[str, dict[str, Any]]:
     suffix = PurePosixPath(rel_path).suffix.lower()
     if suffix == ".py":
@@ -216,6 +271,8 @@ def extract_file_summary(rel_path: str, content: str) -> tuple[str, dict[str, An
         except json.JSONDecodeError as exc:
             return "json", {"schema": None, "error": f"invalid JSON: {exc.msg}", "preview": _preview(content)}
         return "json", {"schema": describe_json_schema(data)[:400], "error": None}
+    if suffix in CODE_SUFFIXES:
+        return "code", extract_code_summary(content)
     return "text", {"preview": _preview(content)}
 
 
@@ -322,7 +379,7 @@ class Blackboard:
         self.save()
 
     def lock_verified_symbols(self, filepaths: list[str]) -> None:
-        """Mark top-level symbols in ``filepaths`` as verified so later tasks preserve them."""
+        """Mark top-level symbols and class methods in ``filepaths`` as verified."""
         ws = self._require_workspace()
         verified_map: dict[str, list[str]] = self.data.setdefault("verified_symbols", {})
         for filepath in filepaths:
@@ -330,11 +387,21 @@ class Blackboard:
             record = self.files.get(rel)
             if not record or record.get("kind") != "python":
                 continue
-            own_names = sorted(
+            own_names = {
                 n for n in (defined_names(record) - self._imported_names(record)) if not n.startswith("_")
-            )
+            }
+            for cls in record.get("summary", {}).get("classes", []):
+                cls_name = cls.get("name", "")
+                if not cls_name or cls_name.startswith("_"):
+                    continue
+                for m_sig in cls.get("methods", []):
+                    match = re.search(r"def\s+(\w+)", m_sig)
+                    if match:
+                        m_name = match.group(1)
+                        if not m_name.startswith("_") or m_name == "__init__":
+                            own_names.add(f"{cls_name}.{m_name}")
             existing = set(verified_map.get(rel, []))
-            verified_map[rel] = sorted(existing | set(own_names))
+            verified_map[rel] = sorted(existing | own_names)
         self.save()
 
     def get_verified_symbols(self, filepath: str) -> set[str]:
@@ -505,6 +572,15 @@ class Blackboard:
                 lines.append(f"!! {summary['error']}")
             else:
                 lines.append(f"schema: {summary.get('schema')}")
+        elif record.get("kind") == "code":
+            if include_imports and summary.get("imports"):
+                lines.append("imports: " + "; ".join(summary["imports"]))
+            for cls_sig in summary.get("classes", []):
+                lines.append(cls_sig)
+            for fn_sig in summary.get("functions", []):
+                lines.append(fn_sig)
+            if not lines and summary.get("preview"):
+                lines.append(f"preview: {summary['preview']}")
         else:
             preview = summary.get("preview", "")
             if preview:

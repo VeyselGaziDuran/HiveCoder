@@ -35,8 +35,30 @@ def _import_key(node: ast.stmt) -> Optional[str]:
     return None
 
 
+def _node_line_range(node: ast.stmt) -> tuple[int, int]:
+    start = max(0, int(getattr(node, "lineno", 1)) - 1)
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.decorator_list:
+        first_dec = min(
+            (int(d.lineno) - 1 for d in node.decorator_list if hasattr(d, "lineno")),
+            default=start,
+        )
+        start = max(0, first_dec)
+    end = int(getattr(node, "end_lineno", None) or getattr(node, "lineno", 1))
+    return start, end
+
+
+def _is_main_guard(node: ast.stmt) -> bool:
+    if not isinstance(node, ast.If):
+        return False
+    try:
+        test_str = ast.unparse(node.test).replace("'", '"')
+        return '__name__' in test_str and '__main__' in test_str
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class ASTPatcher:
-    """Safely merges incoming Python code with existing verified symbols."""
+    """Safely merges incoming Python code with existing verified symbols and class methods."""
 
     @staticmethod
     def extract_top_level_names(source: str) -> set[str]:
@@ -53,6 +75,24 @@ class ASTPatcher:
         return names
 
     @staticmethod
+    def extract_all_symbols(source: str) -> set[str]:
+        """Return top-level symbol names plus ``ClassName.method_name`` entries."""
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return set()
+        names: set[str] = set()
+        for node in tree.body:
+            name = _top_level_symbol_name(node)
+            if name:
+                names.add(name)
+            if isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        names.add(f"{node.name}.{item.name}")
+        return names
+
+    @staticmethod
     def merge_preserving_symbols(
         existing_source: str,
         incoming_source: str,
@@ -60,11 +100,11 @@ class ASTPatcher:
     ) -> str:
         """Merge ``incoming_source`` onto ``existing_source``, retaining missing ``protected_symbols``.
 
-        * If ``incoming_source`` has a syntax error or ``existing_source`` is empty,
-          ``incoming_source`` is returned as-is so the validator/Infirmary can handle it.
-        * Any symbol in ``protected_symbols`` (or any existing top-level function/class if
-          ``protected_symbols`` is None) that is missing from ``incoming_source`` is
-          preserved alongside its required imports.
+        * Preserves missing verified top-level functions, classes, and constants.
+        * Preserves missing verified methods inside existing classes (``ClassName.method``).
+        * Keeps module docstrings and ``from __future__ import ...`` at the top of the file,
+          places preserved imports after the header, and appends preserved top-level blocks
+          before ``if __name__ == "__main__":`` (or at EOF).
         """
         if not existing_source.strip():
             return incoming_source
@@ -77,50 +117,137 @@ class ASTPatcher:
         protected: set[str] = (
             set(protected_symbols)
             if protected_symbols is not None
-            else ASTPatcher.extract_top_level_names(existing_source)
+            else ASTPatcher.extract_all_symbols(existing_source)
         )
         if not protected:
             return incoming_source
 
-        new_names = ASTPatcher.extract_top_level_names(incoming_source)
-        missing = protected - new_names
-        if not missing:
+        old_lines = existing_source.splitlines()
+        working_lines = incoming_source.splitlines()
+
+        # 1. Surgical Class-Level Method Preservation (processed bottom-up to keep line numbers stable)
+        old_classes: dict[str, ast.ClassDef] = {
+            node.name: node for node in old_tree.body if isinstance(node, ast.ClassDef)
+        }
+        new_classes: list[ast.ClassDef] = [
+            node for node in new_tree.body if isinstance(node, ast.ClassDef) and node.name in old_classes
+        ]
+        methods_restored = False
+        for new_cls in sorted(new_classes, key=lambda c: int(c.end_lineno or c.lineno), reverse=True):
+            old_cls = old_classes[new_cls.name]
+            new_method_names = {
+                item.name
+                for item in new_cls.body
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            missing_method_snippets: list[str] = []
+            for item in old_cls.body:
+                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                qualified = f"{new_cls.name}.{item.name}"
+                is_protected = qualified in protected or (
+                    new_cls.name in protected and (not item.name.startswith("_") or item.name == "__init__")
+                )
+                if is_protected and item.name not in new_method_names:
+                    m_start, m_end = _node_line_range(item)
+                    snippet = "\n".join(old_lines[m_start:m_end]).rstrip()
+                    if snippet:
+                        missing_method_snippets.append(snippet)
+            if missing_method_snippets:
+                insert_idx = int(new_cls.end_lineno or new_cls.lineno)
+                injected = [""] + missing_method_snippets
+                working_lines[insert_idx:insert_idx] = "\n".join(injected).splitlines()
+                methods_restored = True
+
+        working_source = "\n".join(working_lines) + ("\n" if incoming_source.endswith("\n") else "")
+        try:
+            working_tree = ast.parse(working_source)
+        except SyntaxError:
+            working_source = incoming_source
+            working_tree = new_tree
+            working_lines = incoming_source.splitlines()
+            methods_restored = False
+
+        # 2. Top-Level Symbol & Import Preservation
+        top_protected = {s for s in protected if "." not in s}
+        new_top_names = ASTPatcher.extract_top_level_names(working_source)
+        missing_top = top_protected - new_top_names
+
+        if not missing_top and not methods_restored:
             return incoming_source
 
-        old_lines = existing_source.splitlines()
-        new_import_keys = {k for node in new_tree.body if (k := _import_key(node)) is not None}
-
+        new_import_keys = {k for node in working_tree.body if (k := _import_key(node)) is not None}
+        preserved_future_imports: list[str] = []
         preserved_imports: list[str] = []
         preserved_blocks: list[str] = []
 
         for node in old_tree.body:
             imp_key = _import_key(node)
             if imp_key is not None and imp_key not in new_import_keys:
-                preserved_imports.append(imp_key)
+                if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+                    preserved_future_imports.append(imp_key)
+                else:
+                    preserved_imports.append(imp_key)
                 continue
             sym = _top_level_symbol_name(node)
-            if sym in missing and hasattr(node, "lineno") and hasattr(node, "end_lineno"):
-                start = max(0, int(node.lineno) - 1)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.decorator_list:
-                    first_dec = min(
-                        (int(d.lineno) - 1 for d in node.decorator_list if hasattr(d, "lineno")),
-                        default=start,
-                    )
-                    start = max(0, first_dec)
-                end = int(node.end_lineno or node.lineno)
+            if sym in missing_top:
+                start, end = _node_line_range(node)
                 snippet = "\n".join(old_lines[start:end]).rstrip()
                 if snippet:
                     preserved_blocks.append(snippet)
 
-        if not preserved_blocks:
+        if not preserved_blocks and not methods_restored:
             return incoming_source
 
-        merged_parts: list[str] = []
+        # Find safe header boundary in working_tree (after docstring & existing __future__ imports)
+        header_end_line = 0
+        for idx, node in enumerate(working_tree.body):
+            if (
+                idx == 0
+                and isinstance(node, ast.Expr)
+                and isinstance(getattr(node, "value", None), ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                header_end_line = int(node.end_lineno or node.lineno)
+                continue
+            if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+                header_end_line = int(node.end_lineno or node.lineno)
+                continue
+            break
+
+        # Find optional `if __name__ == "__main__":` guard at the end of working_tree
+        main_guard_start: Optional[int] = None
+        if working_tree.body and _is_main_guard(working_tree.body[-1]):
+            main_guard_start, _ = _node_line_range(working_tree.body[-1])
+
+        header_part = "\n".join(working_lines[:header_end_line]).strip()
+        if main_guard_start is not None and main_guard_start >= header_end_line:
+            body_part = "\n".join(working_lines[header_end_line:main_guard_start]).strip()
+            footer_part = "\n".join(working_lines[main_guard_start:]).strip()
+        else:
+            body_part = "\n".join(working_lines[header_end_line:]).strip()
+            footer_part = ""
+
+        sections: list[str] = []
+        if header_part:
+            sections.append(header_part)
+        if preserved_future_imports:
+            sections.append("\n".join(preserved_future_imports))
         if preserved_imports:
-            merged_parts.append("\n".join(preserved_imports))
-        merged_parts.extend(preserved_blocks)
-        merged_parts.append(incoming_source.strip())
-        return "\n\n\n".join(part for part in merged_parts if part.strip()) + "\n"
+            sections.append("\n".join(preserved_imports))
+        if body_part:
+            sections.append(body_part)
+        if preserved_blocks:
+            sections.extend(preserved_blocks)
+        if footer_part:
+            sections.append(footer_part)
+
+        merged = "\n\n\n".join(sec for sec in sections if sec.strip()) + "\n"
+        try:
+            ast.parse(merged)
+            return merged
+        except SyntaxError:
+            return working_source if methods_restored else incoming_source
 
     @staticmethod
     def extract_traceback_window(source: str, traceback_text: str, radius: int = 5) -> str:

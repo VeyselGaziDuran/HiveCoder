@@ -17,10 +17,77 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-from core.blackboard import IGNORED_DIRS
+from core.blackboard import CODE_SUFFIXES, IGNORED_DIRS
 
 HIVE_TMP = ".hive_tmp"
 MAX_OUTPUT_CHARS = 6000
+BRACE_CHECK_SUFFIXES: frozenset[str] = CODE_SUFFIXES | {".css", ".scss"}
+
+
+def _check_brace_balance(source: str) -> Optional[str]:
+    """Verify balanced ``{}``, ``()``, and ``[]`` outside strings and comments."""
+    stack: list[tuple[str, int]] = []
+    pairs = {"}": "{", ")": "(", "]": "["}
+    expected_close = {"{": "}", "(": ")", "[": "]"}
+    i = 0
+    n = len(source)
+    lineno = 1
+    in_line_comment = False
+    in_block_comment = False
+    in_string: Optional[str] = None
+
+    while i < n:
+        ch = source[i]
+        nxt = source[i + 1] if i + 1 < n else ""
+        if ch == "\n":
+            lineno += 1
+            in_line_comment = False
+            i += 1
+            continue
+        if in_line_comment:
+            i += 1
+            continue
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                i += 2
+            else:
+                i += 1
+            continue
+        if in_string is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == in_string:
+                in_string = None
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            in_line_comment = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            in_block_comment = True
+            i += 2
+            continue
+        if ch in ("'", '"', "`"):
+            in_string = ch
+            i += 1
+            continue
+        if ch in expected_close:
+            stack.append((ch, lineno))
+        elif ch in pairs:
+            if not stack:
+                return f"unmatched closing '{ch}' at line {lineno}"
+            top, open_line = stack.pop()
+            if top != pairs[ch]:
+                return f"mismatched '{ch}' at line {lineno} (opened '{top}' at line {open_line})"
+        i += 1
+
+    if stack:
+        top, open_line = stack[-1]
+        return f"unclosed '{top}' opened at line {open_line} (expected '{expected_close[top]}')"
+    return None
 
 
 @dataclass
@@ -95,6 +162,10 @@ class Validator:
                     json.loads(path.read_text(encoding="utf-8"))
                 except json.JSONDecodeError as exc:
                     errors.append(f"{rel}: invalid JSON at line {exc.lineno} col {exc.colno}: {exc.msg}")
+            elif suffix in BRACE_CHECK_SUFFIXES:
+                err = _check_brace_balance(path.read_text(encoding="utf-8", errors="replace"))
+                if err:
+                    errors.append(f"{rel}: syntax error ({err})")
         if errors:
             return ValidationResult(False, "syntax", "\n".join(errors), files)
         return ValidationResult(True, "syntax", f"py_compile OK ({len(files)} file(s))", files)
