@@ -358,6 +358,18 @@ class HiveOrchestrator:
                     verdict = inspector.inspect(mt, agent_result.files_written)
                     if inspector.enable_llm_review:
                         state.metrics.llm_calls += 1
+
+                    if not verdict.approved and verdict.deterministic_passed and validator.discover_tests():
+                        probe_val = validator.validate(mt.files_written, run_tests=True)
+                        if probe_val.passed and probe_val.stage == "pytest":
+                            verdict.approved = True
+                            verdict.summary = "Deterministic AST & pytest suite passed (LLM false rejection overridden)."
+                            self._emit(
+                                "inspection_override",
+                                f"[{mt.id}] Overrode subjective LLM rejection because AST checks and pytest passed.",
+                                micro_id=mt.id,
+                            )
+
                     self.state_machine.mark_inspected(mt.id, verdict.approved, verdict.format_feedback())
 
                     if not verdict.approved:

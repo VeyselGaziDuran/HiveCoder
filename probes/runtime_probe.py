@@ -10,6 +10,7 @@ constraints for the prompt context.
 from __future__ import annotations
 
 import importlib.metadata as metadata
+import importlib.util
 import platform
 import sys
 from dataclasses import dataclass, field
@@ -83,6 +84,24 @@ class RuntimeProbe:
             installed_packages=filtered,
             compatibility_hints=hints,
         )
+
+    @staticmethod
+    def is_installed(package_or_module: str) -> bool:
+        """Return True if ``package_or_module`` is importable or installed as a distribution."""
+        norm = package_or_module.strip()
+        if not norm:
+            return False
+        try:
+            spec = importlib.util.find_spec(norm)
+        except (ImportError, ValueError):
+            spec = None
+        if spec is not None:
+            return True
+        try:
+            metadata.distribution(norm)
+            return True
+        except metadata.PackageNotFoundError:
+            return False
 
     @staticmethod
     def _build_hints(installed: dict[str, str]) -> list[str]:

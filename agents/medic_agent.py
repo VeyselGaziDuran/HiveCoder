@@ -12,6 +12,7 @@ from core.blackboard import normalize_relpath
 from core.context_builder import format_task_spec
 from core.llm_client import parse_nano_tags
 from core.state_machine import MicroTask
+from probes.runtime_probe import RuntimeProbe
 from probes.signature_probe import SignatureProbe, format_probe_summary
 
 MEDIC_SYSTEM_PROMPT = """\
@@ -47,6 +48,25 @@ class MedicAgent(BaseAgent):
                 return norm
         return task.target_file
 
+    def _detect_missing_package_alert(self, error_output: str) -> str:
+        """Return a directive if ``error_output`` references an uninstalled third-party package."""
+        matches = re.findall(r"No module named ['\"]([A-Za-z0-9_.-]+)['\"]", error_output)
+        if not matches:
+            return ""
+        probe = RuntimeProbe()
+        alerts: list[str] = []
+        for raw_mod in dict.fromkeys(matches):
+            root_mod = raw_mod.split(".")[0]
+            if self.blackboard._module_record(raw_mod) or self.blackboard._module_record(root_mod):
+                continue
+            if not probe.is_installed(root_mod):
+                alerts.append(
+                    f"Package '{root_mod}' is NOT installed in this Python environment. "
+                    f"Do NOT import '{root_mod}'; replace it with Python standard library modules "
+                    "or packages listed under RUNTIME ENVIRONMENT."
+                )
+        return "\n".join(alerts)
+
     def repair(
         self,
         task: MicroTask,
@@ -72,8 +92,11 @@ class MedicAgent(BaseAgent):
 
         line_window = ASTPatcher.extract_traceback_window(current_code, error_output)
         live_sigs = format_probe_summary(SignatureProbe().inspect_imports_in_source(current_code))
+        missing_pkg_alert = self._detect_missing_package_alert(error_output)
 
         extra_sections: list[str] = []
+        if missing_pkg_alert:
+            extra_sections.append(f"## MISSING PACKAGE ALERT\n{missing_pkg_alert}")
         if line_window:
             extra_sections.append(f"## FOCUS AREA AROUND ERROR LINE\n```\n{line_window}\n```")
         if live_sigs:

@@ -33,6 +33,7 @@ class InspectionVerdict:
     approved: bool
     issues: list[str] = field(default_factory=list)
     summary: str = ""
+    deterministic_passed: bool = True
 
     def format_feedback(self) -> str:
         if self.approved:
@@ -95,6 +96,7 @@ class InspectorAgent(BaseAgent):
                 approved=False,
                 issues=deterministic_issues,
                 summary="Deterministic Blackboard/AST inspection failed.",
+                deterministic_passed=False,
             )
 
         if not self.enable_llm_review:
