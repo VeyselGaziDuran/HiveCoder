@@ -24,6 +24,8 @@ def _top_level_symbol_name(node: ast.stmt) -> Optional[str]:
                 return target.id
     if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
         return node.target.id
+    if hasattr(ast, "TypeAlias") and isinstance(node, getattr(ast, "TypeAlias")):
+        return getattr(getattr(node, "name", None), "id", None)
     return None
 
 

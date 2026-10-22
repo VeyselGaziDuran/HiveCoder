@@ -119,12 +119,21 @@ def _short_value(node: ast.AST, limit: int = 48) -> str:
     return text if len(text) <= limit else ""
 
 
+def _is_main_if(node: ast.If) -> bool:
+    try:
+        test_src = ast.unparse(node.test).replace("'", '"')
+        return "__name__" in test_src and "__main__" in test_src
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _iter_module_statements(body: list[ast.stmt]) -> list[ast.stmt]:
-    """Yield module-level statements, including those inside top-level ``if`` and ``try`` blocks."""
+    """Yield module-level statements, including those inside top-level ``if`` and ``try`` blocks (excluding ``__main__``)."""
     out: list[ast.stmt] = []
     for node in body:
-        out.append(node)
         if isinstance(node, ast.If):
+            if _is_main_if(node):
+                continue
             out.extend(_iter_module_statements(node.body))
             out.extend(_iter_module_statements(node.orelse))
         elif isinstance(node, ast.Try):
@@ -133,6 +142,8 @@ def _iter_module_statements(body: list[ast.stmt]) -> list[ast.stmt]:
                 out.extend(_iter_module_statements(handler.body))
             out.extend(_iter_module_statements(node.orelse))
             out.extend(_iter_module_statements(node.finalbody))
+        else:
+            out.append(node)
     return out
 
 
@@ -202,6 +213,21 @@ def extract_python_summary(source: str) -> dict[str, Any]:
             value = _short_value(node.value) if node.value is not None else ""
             entry = f"{node.target.id}: {_unparse(node.annotation)}"
             summary["globals"].append(f"{entry} = {value}" if value else entry)
+        elif hasattr(ast, "TypeAlias") and isinstance(node, getattr(ast, "TypeAlias")):
+            alias_name = getattr(getattr(node, "name", None), "id", "")
+            if alias_name:
+                summary["globals"].append(f"{alias_name} = {_short_value(node.value) or 'TypeAlias'}")
+
+    summary["imports"] = list(dict.fromkeys(summary["imports"]))
+    summary["functions"] = list(dict.fromkeys(summary["functions"]))
+    summary["globals"] = list(dict.fromkeys(summary["globals"]))
+    seen_cls: set[str] = set()
+    unique_cls: list[dict[str, Any]] = []
+    for cls in summary["classes"]:
+        if cls["name"] not in seen_cls:
+            seen_cls.add(cls["name"])
+            unique_cls.append(cls)
+    summary["classes"] = unique_cls
     return summary
 
 

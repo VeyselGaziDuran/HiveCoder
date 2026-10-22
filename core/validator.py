@@ -224,9 +224,12 @@ class Validator:
         if not syntax.passed or not run_tests:
             return syntax
         own_tests = [p for p in rel_paths if is_test_file(p)]
+        all_tests = self.discover_tests()
         if own_tests:
             result = self.run_pytest(own_tests)
-        elif self.discover_tests():
+            if result.passed and len(all_tests) > len(own_tests):
+                result = self.run_pytest()
+        elif all_tests:
             result = self.run_pytest()
         else:
             return ValidationResult(True, "syntax", syntax.output + "; no tests present yet", rel_paths)

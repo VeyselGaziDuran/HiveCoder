@@ -49,7 +49,7 @@ def strip_think(text: str) -> str:
     opened = _THINK_OPEN.search(cleaned)
     if opened:
         tail = cleaned[opened.end():]
-        anchor = re.search(r"<{2,3}\s*(FILE_PATH|CODE|RELAY_NOTE)|[{\[]", tail, re.IGNORECASE)
+        anchor = re.search(r"<{2,3}\s*(FILE_PATH|CODE|RELAY_NOTE)|```|[{\[]", tail, re.IGNORECASE)
         cleaned = cleaned[: opened.start()] + (tail[anchor.start():] if anchor else "")
     return cleaned.strip()
 
@@ -305,11 +305,8 @@ def _repair_json(src: str) -> str:
 def _balanced_candidates(text: str) -> list[str]:
     """Substrings that start at ``{``/``[`` and end at the matching closer (or EOF)."""
     candidates: list[str] = []
-    starts = [m.start() for m in re.finditer(r"[{\[]", text)][:20]
-    consumed_until = -1
+    starts = [m.start() for m in re.finditer(r"[{\[]", text)][:24]
     for start in starts:
-        if start < consumed_until:
-            continue
         depth = 0
         in_str: Optional[str] = None
         escape = False
@@ -333,9 +330,9 @@ def _balanced_candidates(text: str) -> list[str]:
                 if depth == 0:
                     end = idx + 1
                     break
-        candidates.append(text[start:end] if end else text[start:])
-        if end:
-            consumed_until = end
+        candidate = text[start:end] if end else text[start:]
+        if candidate not in candidates:
+            candidates.append(candidate)
     return candidates
 
 
