@@ -15,18 +15,36 @@ import textwrap
 from typing import Iterable, Optional
 
 
-def _top_level_symbol_name(node: ast.stmt) -> Optional[str]:
+def _assigned_target_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for elt in target.elts:
+            names.extend(_assigned_target_names(elt))
+        return names
+    return []
+
+
+def _node_symbol_names(node: ast.stmt) -> list[str]:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return node.name
+        return [node.name]
     if isinstance(node, ast.Assign):
+        names: list[str] = []
         for target in node.targets:
-            if isinstance(target, ast.Name):
-                return target.id
+            names.extend(_assigned_target_names(target))
+        return names
     if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-        return node.target.id
+        return [node.target.id]
     if hasattr(ast, "TypeAlias") and isinstance(node, getattr(ast, "TypeAlias")):
-        return getattr(getattr(node, "name", None), "id", None)
-    return None
+        alias_id = getattr(getattr(node, "name", None), "id", None)
+        return [alias_id] if alias_id else []
+    return []
+
+
+def _top_level_symbol_name(node: ast.stmt) -> Optional[str]:
+    names = _node_symbol_names(node)
+    return names[0] if names else None
 
 
 def _import_key(node: ast.stmt) -> Optional[str]:
@@ -72,9 +90,7 @@ class ASTPatcher:
             return set()
         names: set[str] = set()
         for node in tree.body:
-            name = _top_level_symbol_name(node)
-            if name:
-                names.add(name)
+            names.update(_node_symbol_names(node))
         return names
 
     @staticmethod
@@ -86,13 +102,11 @@ class ASTPatcher:
             return set()
         names: set[str] = set()
         for node in tree.body:
-            name = _top_level_symbol_name(node)
-            if name:
-                names.add(name)
+            names.update(_node_symbol_names(node))
             if isinstance(node, ast.ClassDef):
                 for item in node.body:
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        names.add(f"{node.name}.{item.name}")
+                    for m_name in _node_symbol_names(item):
+                        names.add(f"{node.name}.{m_name}")
         return names
 
     @staticmethod
@@ -205,8 +219,8 @@ class ASTPatcher:
                 else:
                     preserved_imports.append(imp_key)
                 continue
-            sym = _top_level_symbol_name(node)
-            if sym in missing_top:
+            node_syms = _node_symbol_names(node)
+            if node_syms and any(s in missing_top for s in node_syms):
                 start, end = _node_line_range(node)
                 snippet = "\n".join(old_lines[start:end]).rstrip()
                 if snippet:
@@ -289,15 +303,28 @@ class ASTPatcher:
         )
 
     @staticmethod
-    def extract_traceback_window(source: str, traceback_text: str, radius: int = 5) -> str:
+    def extract_traceback_window(
+        source: str,
+        traceback_text: str,
+        radius: int = 5,
+        filepath: str = "",
+    ) -> str:
         """Extract ``±radius`` lines around line numbers referenced in ``traceback_text``."""
         if not source.strip() or not traceback_text.strip():
             return ""
         line_numbers: list[int] = []
-        for match in re.finditer(r"(?:line\s+|:)(\d+)\b", traceback_text):
-            lineno = int(match.group(1))
-            if lineno not in line_numbers:
-                line_numbers.append(lineno)
+        if filepath:
+            basename = filepath.rsplit("/", 1)[-1]
+            for pat in (filepath, basename):
+                for match in re.finditer(rf"{re.escape(pat)}['\", )]*?(?:,\s*line\s+|:)(\d+)\b", traceback_text):
+                    lineno = int(match.group(1))
+                    if lineno not in line_numbers:
+                        line_numbers.append(lineno)
+        if not line_numbers:
+            for match in re.finditer(r"(?:line\s+|:)(\d+)\b", traceback_text):
+                lineno = int(match.group(1))
+                if lineno not in line_numbers:
+                    line_numbers.append(lineno)
 
         lines = source.splitlines()
         if not lines or not line_numbers:

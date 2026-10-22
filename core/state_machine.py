@@ -251,6 +251,8 @@ class StateMachine:
             raise IllegalCompletionError(f"{task_id} is already done")
         mt.status = "in_progress"
         mt.attempts += 1
+        mt.files_written = []
+        mt.relay_note = ""
         mt.inspected = False
         mt.validated = False
         mt.snapshot = snapshot
@@ -363,6 +365,8 @@ class StateMachine:
             if mt.status in ("in_progress", "failed"):
                 interrupted.append(mt.model_copy(deep=True))
                 mt.status = "pending"
+                mt.files_written = []
+                mt.relay_note = ""
                 mt.inspected = False
                 mt.validated = False
                 mt.medic_attempts = 0

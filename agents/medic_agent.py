@@ -35,11 +35,28 @@ class MedicAgent(BaseAgent):
 
     def select_patient_file(self, task: MicroTask, error_output: str) -> str:
         """Pick which workspace file should be repaired based on the traceback."""
+        frame_files: list[str] = []
+        for match in re.findall(r"([A-Za-z0-9_./-]+\.py):\d+", error_output):
+            try:
+                norm = normalize_relpath(self.workspace, match)
+            except ValueError:
+                continue
+            if (self.workspace / norm).is_file():
+                frame_files.append(norm)
+
+        # If the deepest frame in a non-AssertionError crash is a workspace module, repair that module
+        if frame_files and "AssertionError" not in error_output:
+            deepest = frame_files[-1]
+            if not Path(deepest).name.startswith("test_"):
+                return deepest
+
         candidates = list(dict.fromkeys([*task.files_written, task.target_file]))
         for rel in candidates:
             if rel in error_output:
                 return rel
-        for match in re.findall(r'([A-Za-z0-9_./-]+\.py)', error_output):
+        if frame_files:
+            return frame_files[-1]
+        for match in re.findall(r"([A-Za-z0-9_./-]+\.py)", error_output):
             try:
                 norm = normalize_relpath(self.workspace, match)
             except ValueError:
@@ -47,6 +64,26 @@ class MedicAgent(BaseAgent):
             if (self.workspace / norm).is_file():
                 return norm
         return task.target_file
+
+    def _extract_related_traceback_context(self, patient: str, error_output: str) -> str:
+        """Extract line windows from other workspace files referenced in ``error_output``."""
+        windows: list[str] = []
+        seen = {patient}
+        for match in re.findall(r"([A-Za-z0-9_./-]+\.py)", error_output):
+            try:
+                norm = normalize_relpath(self.workspace, match)
+            except ValueError:
+                continue
+            if norm in seen or not (self.workspace / norm).is_file():
+                continue
+            seen.add(norm)
+            other_src = (self.workspace / norm).read_text(encoding="utf-8", errors="replace")
+            win = ASTPatcher.extract_traceback_window(other_src, error_output, filepath=norm)
+            if win:
+                windows.append(f"### {norm}\n```\n{win}\n```")
+            elif other_src.strip() and len(other_src) <= 1200:
+                windows.append(f"### {norm}\n```\n{other_src.strip()}\n```")
+        return "\n\n".join(windows)
 
     def _detect_missing_package_alert(self, error_output: str) -> str:
         """Return a directive if ``error_output`` references an uninstalled third-party package."""
@@ -90,7 +127,8 @@ class MedicAgent(BaseAgent):
         memory = self.blackboard.get_compact_memory(target_files=[patient], max_notes=10)
         naive_chars = self.context_builder.naive_chars() + len(spec)
 
-        line_window = ASTPatcher.extract_traceback_window(current_code, error_output)
+        line_window = ASTPatcher.extract_traceback_window(current_code, error_output, filepath=patient)
+        related_window = self._extract_related_traceback_context(patient, error_output)
         live_sigs = format_probe_summary(SignatureProbe().inspect_traceback(current_code, error_output))
         missing_pkg_alert = self._detect_missing_package_alert(error_output)
 
@@ -98,7 +136,9 @@ class MedicAgent(BaseAgent):
         if missing_pkg_alert:
             extra_sections.append(f"## MISSING PACKAGE ALERT\n{missing_pkg_alert}")
         if line_window:
-            extra_sections.append(f"## FOCUS AREA AROUND ERROR LINE\n```\n{line_window}\n```")
+            extra_sections.append(f"## FOCUS AREA AROUND ERROR LINE ({patient})\n```\n{line_window}\n```")
+        if related_window:
+            extra_sections.append(f"## RELATED WORKSPACE FILES IN TRACEBACK\n{related_window}")
         if live_sigs:
             extra_sections.append(live_sigs)
         if loop_breaker_hint.strip():

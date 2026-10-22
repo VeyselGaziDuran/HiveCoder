@@ -613,3 +613,89 @@ def test_deep_audit_base_class_ordering_relative_imports_and_stdlib_probe(tmp_pa
     assert ts.latest_chars_per_sec == 1000.0
 
 
+def test_cycle_1_2_3_tuple_assign_jsx_apostrophe_and_deepest_patient_selection(tmp_path: Path) -> None:
+    """Verify tuple unpacking preservation, __main__ exclusion, JSX apostrophe balance, and deepest patient selection."""
+    from agents.medic_agent import MedicAgent
+    from core.context_builder import ContextBuilder
+    from core.state_machine import MicroTask
+    from core.validator import Validator
+
+    ws = tmp_path / "cycle_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle_mem", workspace=ws)
+
+    # 1. Tuple unpacking & class attribute preservation + __main__ exclusion
+    old_code = (
+        "MIN_BOUND, MAX_BOUND = 1, 99\n\n"
+        "try:\n"
+        "    def fallback_fn() -> int:\n"
+        "        return MIN_BOUND\n"
+        "except Exception:\n"
+        "    def fallback_fn() -> int:\n"
+        "        return 0\n\n"
+        "class ConfigBox:\n"
+        "    PREFIX: str = 'cfg_'\n"
+        "    def label(self, name: str) -> str:\n"
+        "        return self.PREFIX + name\n\n"
+        'if __name__ == "__main__":\n'
+        "    scratch_only_var = 42\n"
+    )
+    (ws / "box.py").write_text(old_code, encoding="utf-8")
+    rec = bb.update_file_record("box.py", agent_note="Initial box", task_id="step-1")
+    bb.lock_verified_symbols(["box.py"])
+
+    # __main__ variable must NOT be indexed as an exportable module global
+    from core.blackboard import defined_names
+
+    exported = defined_names(rec)
+    assert "MIN_BOUND" in exported and "MAX_BOUND" in exported
+    assert "fallback_fn" in exported
+    assert "scratch_only_var" not in exported
+
+    # Incoming code re-emits ConfigBox without PREFIX or label(), and omits MIN_BOUND, MAX_BOUND
+    new_code = (
+        "class ConfigBox:\n"
+        "    def bounds(self) -> tuple[int, int]:\n"
+        "        return (MIN_BOUND, MAX_BOUND)\n"
+    )
+    merged = ASTPatcher.merge_preserving_symbols(
+        existing_source=old_code,
+        incoming_source=new_code,
+        protected_symbols=bb.get_verified_symbols("box.py"),
+    )
+    ns: dict[str, Any] = {}
+    exec(compile(merged, "<cycle_merged>", "exec"), ns)
+    box = ns["ConfigBox"]()
+    assert box.bounds() == (1, 99)
+    assert box.label("prod") == "cfg_prod"
+
+    # 2. JSX text with apostrophes ("User's Profile", "Don't") must pass brace balance
+    jsx_path = ws / "Profile.tsx"
+    jsx_path.write_text(
+        "export function Profile() {\n"
+        "  return <div>User's Profile — Don't worry!</div>;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    val = Validator(ws)
+    assert val.check_syntax(["Profile.tsx"]).passed is True
+
+    # 3. MedicAgent selects the deepest crashing non-test module on runtime TypeError
+    (ws / "tests").mkdir()
+    (ws / "tests" / "test_box.py").write_text("from box import ConfigBox\n", encoding="utf-8")
+    llm = TempTrackingLLMClient(DEFAULT_CONFIG, [])
+    medic = MedicAgent(llm, bb, ContextBuilder(bb, ws), ws)
+    mt = MicroTask(id="step-2", title="Test box", target_file="tests/test_box.py", kind="test", files_written=["tests/test_box.py"])
+    tb = (
+        "tests/test_box.py:4: in test_box\n"
+        "    box.label(123)\n"
+        "box.py:12: in label\n"
+        "    return self.PREFIX + name\n"
+        "E   TypeError: can only concatenate str (not 'int') to str\n"
+    )
+    assert medic.select_patient_file(mt, tb) == "box.py"
+    related = medic._extract_related_traceback_context("box.py", tb)
+    assert "tests/test_box.py" in related
+
+
+
