@@ -122,13 +122,15 @@ class BaseAgent:
             abs_path = self.workspace / rel_path
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             final_code = block.code
+            if rel_path.endswith(".py"):
+                final_code = ASTPatcher.normalize_root_relative_imports(final_code, rel_path)
             if abs_path.is_file() and rel_path.endswith(".py"):
                 protected = self.blackboard.get_verified_symbols(rel_path)
                 if protected:
                     existing_code = abs_path.read_text(encoding="utf-8", errors="replace")
                     final_code = ASTPatcher.merge_preserving_symbols(
                         existing_source=existing_code,
-                        incoming_source=block.code,
+                        incoming_source=final_code,
                         protected_symbols=protected,
                     )
             tmp_path = abs_path.with_name(f".{abs_path.name}.{os.getpid()}.tmp")

@@ -146,7 +146,7 @@ class ASTPatcher:
                     continue
                 qualified = f"{new_cls.name}.{item.name}"
                 is_protected = qualified in protected or (
-                    new_cls.name in protected and (not item.name.startswith("_") or item.name == "__init__")
+                    new_cls.name in protected and not (item.name.startswith("__") and item.name.endswith("__") and item.name != "__init__")
                 )
                 if is_protected and item.name not in new_method_names:
                     m_start, m_end = _node_line_range(item)
@@ -199,8 +199,10 @@ class ASTPatcher:
         if not preserved_blocks and not methods_restored:
             return incoming_source
 
-        # Find safe header boundary in working_tree (after docstring & existing __future__ imports)
-        header_end_line = 0
+        # Find safe header boundary (docstring + __future__) and leading imports in working_tree
+        future_end_line = 0
+        imports_end_line = 0
+        in_future_phase = True
         for idx, node in enumerate(working_tree.body):
             if (
                 idx == 0
@@ -208,10 +210,16 @@ class ASTPatcher:
                 and isinstance(getattr(node, "value", None), ast.Constant)
                 and isinstance(node.value.value, str)
             ):
-                header_end_line = int(node.end_lineno or node.lineno)
+                future_end_line = int(node.end_lineno or node.lineno)
+                imports_end_line = future_end_line
                 continue
-            if isinstance(node, ast.ImportFrom) and node.module == "__future__":
-                header_end_line = int(node.end_lineno or node.lineno)
+            if in_future_phase and isinstance(node, ast.ImportFrom) and node.module == "__future__":
+                future_end_line = int(node.end_lineno or node.lineno)
+                imports_end_line = future_end_line
+                continue
+            in_future_phase = False
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                imports_end_line = int(node.end_lineno or node.lineno)
                 continue
             break
 
@@ -220,25 +228,28 @@ class ASTPatcher:
         if working_tree.body and _is_main_guard(working_tree.body[-1]):
             main_guard_start, _ = _node_line_range(working_tree.body[-1])
 
-        header_part = "\n".join(working_lines[:header_end_line]).strip()
-        if main_guard_start is not None and main_guard_start >= header_end_line:
-            body_part = "\n".join(working_lines[header_end_line:main_guard_start]).strip()
+        future_part = "\n".join(working_lines[:future_end_line]).strip()
+        working_imports_part = "\n".join(working_lines[future_end_line:imports_end_line]).strip()
+        if main_guard_start is not None and main_guard_start >= imports_end_line:
+            body_part = "\n".join(working_lines[imports_end_line:main_guard_start]).strip()
             footer_part = "\n".join(working_lines[main_guard_start:]).strip()
         else:
-            body_part = "\n".join(working_lines[header_end_line:]).strip()
+            body_part = "\n".join(working_lines[imports_end_line:]).strip()
             footer_part = ""
 
         sections: list[str] = []
-        if header_part:
-            sections.append(header_part)
+        if future_part:
+            sections.append(future_part)
         if preserved_future_imports:
             sections.append("\n".join(preserved_future_imports))
         if preserved_imports:
             sections.append("\n".join(preserved_imports))
-        if body_part:
-            sections.append(body_part)
+        if working_imports_part:
+            sections.append(working_imports_part)
         if preserved_blocks:
             sections.extend(preserved_blocks)
+        if body_part:
+            sections.append(body_part)
         if footer_part:
             sections.append(footer_part)
 
@@ -248,6 +259,18 @@ class ASTPatcher:
             return merged
         except SyntaxError:
             return working_source if methods_restored else incoming_source
+
+    @staticmethod
+    def normalize_root_relative_imports(source: str, rel_path: str) -> str:
+        """Convert invalid root-level ``from .mod import x`` to ``from mod import x``."""
+        if "/" in rel_path or not rel_path.endswith(".py"):
+            return source
+        return re.sub(
+            r"^(\s*)from\s+\.([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import\s+",
+            r"\1from \2 import ",
+            source,
+            flags=re.MULTILINE,
+        )
 
     @staticmethod
     def extract_traceback_window(source: str, traceback_text: str, radius: int = 5) -> str:

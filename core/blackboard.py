@@ -379,7 +379,7 @@ class Blackboard:
         self.save()
 
     def lock_verified_symbols(self, filepaths: list[str]) -> None:
-        """Mark top-level symbols and class methods in ``filepaths`` as verified."""
+        """Mark top-level symbols, helpers, and class methods in ``filepaths`` as verified."""
         ws = self._require_workspace()
         verified_map: dict[str, list[str]] = self.data.setdefault("verified_symbols", {})
         for filepath in filepaths:
@@ -388,17 +388,19 @@ class Blackboard:
             if not record or record.get("kind") != "python":
                 continue
             own_names = {
-                n for n in (defined_names(record) - self._imported_names(record)) if not n.startswith("_")
+                n
+                for n in (defined_names(record) - self._imported_names(record))
+                if not (n.startswith("__") and n.endswith("__"))
             }
             for cls in record.get("summary", {}).get("classes", []):
                 cls_name = cls.get("name", "")
-                if not cls_name or cls_name.startswith("_"):
+                if not cls_name:
                     continue
                 for m_sig in cls.get("methods", []):
                     match = re.search(r"def\s+(\w+)", m_sig)
                     if match:
                         m_name = match.group(1)
-                        if not m_name.startswith("_") or m_name == "__init__":
+                        if not (m_name.startswith("__") and m_name.endswith("__") and m_name != "__init__"):
                             own_names.add(f"{cls_name}.{m_name}")
             existing = set(verified_map.get(rel, []))
             verified_map[rel] = sorted(existing | own_names)
@@ -681,6 +683,15 @@ class Blackboard:
             if isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 if node.level:
+                    if not package_parts:
+                        issues.append(
+                            ConsistencyIssue(
+                                rel,
+                                node.lineno,
+                                f"Relative import 'from {'.' * node.level}{module} import ...' is invalid in top-level module '{rel}'; use absolute import.",
+                            )
+                        )
+                        continue
                     base = package_parts[: len(package_parts) - (node.level - 1)] if node.level > 1 else package_parts
                     module = ".".join([*base, module] if module else base)
                 found = self._module_record(module) if module else None
