@@ -1440,6 +1440,44 @@ def test_cycle_23_backtick_pseudo_root_relpath_and_uncreated_target_protection(t
     assert "def main" in (ws / "app.py").read_text(encoding="utf-8")
 
 
+def test_cycle_24_session_only_cli_overrides_and_resumed_cooldown_throughput_reset(tmp_path: Path) -> None:
+    """Verify persist=False does not overwrite config.json and resume_pending_cooldown resets throttled throughput."""
+    from core.config import load_config
+    from core.orchestrator import HiveOrchestrator
+
+    cfg_file = tmp_path / "custom_config.json"
+    cfg_file.write_text('{"provider": "ollama", "thermal": {"profile": "adaptive"}}\n', encoding="utf-8")
+    before_disk = cfg_file.read_text(encoding="utf-8")
+
+    cfg = load_config(cfg_file)
+    cfg["memory_dir"] = str(tmp_path / "mem24")
+    orch = HiveOrchestrator(config=cfg)
+    orch.set_thermal("turbo", persist=False)
+    orch.set_provider("api", persist=False)
+    orch.set_model("gpt-4o", persist=False)
+    assert cfg_file.read_text(encoding="utf-8") == before_disk
+
+    # Resumed cooldown resets sensor throughput so it does not immediately re-trigger after resume
+    sensor = ThermalSensor()
+    sensor.record_throughput(1.0, 1000)
+    sensor.record_throughput(1.0, 400)
+    assert sensor.read().is_hot is True
+
+    now = [100.0]
+    guard = ThermalGuard(
+        settings={"profile": "eco"},
+        sleeper=lambda s: now.__setitem__(0, now[0] + s),
+        clock=lambda: now[0],
+        show_progress=False,
+        sensor=sensor,
+    )
+    guard.cooldown_until = 105.0
+    guard.resume_pending_cooldown()
+    assert sensor.latest_chars_per_sec == sensor.baseline_chars_per_sec
+    assert sensor.read().is_hot is False
+
+
+
 
 
 

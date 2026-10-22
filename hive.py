@@ -87,11 +87,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     if args.thermal:
-        orchestrator.set_thermal(args.thermal)
+        orchestrator.set_thermal(args.thermal, persist=False)
     if args.provider:
-        orchestrator.set_provider(args.provider)
+        orchestrator.set_provider(args.provider, persist=False)
     if args.model:
-        orchestrator.set_model(args.model)
+        orchestrator.set_model(args.model, persist=False)
 
     if args.self_test:
         return ui._run_self_test()

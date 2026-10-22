@@ -642,24 +642,27 @@ class HiveOrchestrator:
         self._emit("task_failed", f"Task {state.task_id} failed on micro-task {mt.id}.")
         return state
 
-    def set_thermal(self, profile: str, minutes: Optional[float] = None) -> dict[str, Any]:
+    def set_thermal(self, profile: str, minutes: Optional[float] = None, persist: bool = True) -> dict[str, Any]:
         self.thermal.set_profile(profile, cooldown_minutes=minutes)
-        save_config(self.config)
+        if persist:
+            save_config(self.config)
         return self.thermal.status()
 
-    def set_provider(self, provider: str) -> str:
+    def set_provider(self, provider: str, persist: bool = True) -> str:
         provider = provider.strip().lower()
         if provider not in ("ollama", "api"):
             raise ValueError("Provider must be 'ollama' or 'api'")
         self.config["provider"] = provider
-        save_config(self.config)
+        if persist:
+            save_config(self.config)
         return provider
 
-    def set_model(self, model_name: str) -> str:
+    def set_model(self, model_name: str, persist: bool = True) -> str:
         model_name = model_name.strip()
         if not model_name:
             raise ValueError("Model name cannot be empty")
         section = "ollama" if self.config.get("provider", "ollama") == "ollama" else "api"
         self.config.setdefault(section, {})["model"] = model_name
-        save_config(self.config)
+        if persist:
+            save_config(self.config)
         return model_name

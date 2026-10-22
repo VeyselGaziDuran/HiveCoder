@@ -241,6 +241,9 @@ class ThermalGuard:
         self._notify()
         waited = self._countdown()
         self.total_cooldowns += 1
+        if self.sensor is not None:
+            self.sensor.reset_throughput_after_cooldown()
+        self.last_reading = None
         self._reset_counters()
         return waited
 

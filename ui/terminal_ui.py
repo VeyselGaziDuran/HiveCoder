@@ -69,7 +69,8 @@ class TerminalUI:
         model = active_model(cfg)
         prof = self.orchestrator.thermal.profile
         healthy, health_msg = self.orchestrator.llm.health()
-        health_badge = f"[green]ONLINE ({health_msg})[/]" if healthy else f"[yellow]OFFLINE ({health_msg})[/]"
+        safe_health = escape(str(health_msg))
+        health_badge = f"[green]ONLINE ({safe_health})[/]" if healthy else f"[yellow]OFFLINE ({safe_health})[/]"
 
         grid = Table.grid(expand=True, padding=(0, 2))
         grid.add_column(justify="left")
@@ -79,9 +80,9 @@ class TerminalUI:
             health_badge,
         )
         grid.add_row(
-            f"[dim]Provider:[/] [bold]{provider}[/]   [dim]Model:[/] [bold]{model}[/]   "
-            f"[dim]Workspace:[/] [bold]{self.workspace}[/]",
-            f"[dim]Thermal:[/] [bold cyan]{prof.name.upper()}[/] "
+            f"[dim]Provider:[/] [bold]{escape(str(provider))}[/]   [dim]Model:[/] [bold]{escape(str(model))}[/]   "
+            f"[dim]Workspace:[/] [bold]{escape(str(self.workspace))}[/]",
+            f"[dim]Thermal:[/] [bold cyan]{escape(prof.name.upper())}[/] "
             f"(pause {int(prof.micro_pause_seconds)}s | cooldown {int(prof.cooldown_seconds)}s)",
         )
         self.console.print(Panel(grid, box=ROUNDED, border_style="bright_cyan"))
