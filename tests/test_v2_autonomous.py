@@ -809,6 +809,58 @@ def test_cycle_6_7_code_toposort_init_ordering_and_git_guard_nested_memory(tmp_p
     assert '"paused"' in state_json.read_text(encoding="utf-8")
 
 
+def test_cycle_8_corrupt_state_recovery_resume_all_done_and_rich_markup_escape(tmp_path: Path) -> None:
+    """Verify corrupt state/history quarantine, finish() from CODING after resume, and Rich markup escaping."""
+    import io
+    from rich.console import Console
+    from core.state_machine import MicroTask, StateMachine, TaskHistory
+    from ui.terminal_ui import TerminalUI
+
+    # 1. Corrupt state.json and task_history.json are quarantined without crashing
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{broken_json", encoding="utf-8")
+    sm = StateMachine(state_path)
+    assert sm.load() is None
+    assert (tmp_path / "state.corrupt.json").is_file()
+
+    hist_path = tmp_path / "task_history.json"
+    hist_path.write_text("{not_valid", encoding="utf-8")
+    th = TaskHistory(hist_path)
+    assert th.load() == []
+    assert (tmp_path / "task_history.corrupt.json").is_file()
+
+    # 2. Resuming a task where all micro-tasks are already verified & done finishes cleanly from CODING phase
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    sm.new_task("Complete after resume", ws)
+    sm.transition(Phase.PLANNING)
+    sm.set_plan([MicroTask(id="step-1", title="Done step", target_file="a.py", kind="code")])
+    sm.transition(Phase.CODING)
+    sm.start_micro_task("step-1")
+    sm.record_files("step-1", ["a.py"], "Done a.py")
+    sm.transition(Phase.INSPECTING)
+    sm.mark_inspected("step-1", True, "OK")
+    sm.transition(Phase.VALIDATING)
+    sm.mark_validated("step-1", True, "OK")
+    sm.complete_micro_task("step-1")
+    # Simulate resume transitioning to CODING when no pending micro-tasks remain
+    sm.transition(Phase.CODING)
+    finished = sm.finish()
+    assert finished.phase == Phase.COMPLETED
+
+    # 3. TerminalUI.handle_event escapes closing bracket tags '[/]' in tracebacks without MarkupError
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False)
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["memory_dir"] = str(tmp_path / "mem")
+    cfg["default_workspace"] = str(ws)
+    orch = HiveOrchestrator(config=cfg, console=console)
+    tui = TerminalUI(orchestrator=orch, workspace=ws, console=console)
+    tui.handle_event("validation_failed", "AssertionError: regex r'[/]' did not match [bold", {})
+    assert "AssertionError" in buf.getvalue()
+
+
+
 
 
 

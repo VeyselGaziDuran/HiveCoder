@@ -10,6 +10,7 @@ from typing import Any, Optional
 from rich.box import ROUNDED
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -92,8 +93,9 @@ class TerminalUI:
 
     def handle_event(self, kind: str, message: str, data: dict[str, Any]) -> None:
         tag, style = EVENT_STYLES.get(kind, (kind.upper(), "bold white"))
+        safe_msg = escape(message)
         if kind == "plan_ready" and "micro_tasks" in data:
-            self.console.print(f"[{style}][{tag}][/] {message}")
+            self.console.print(f"[{style}][{tag}][/] {safe_msg}")
             self.render_plan_table(data["micro_tasks"])
             return
         if kind == "relay_note":
@@ -106,7 +108,7 @@ class TerminalUI:
                 )
             )
             return
-        self.console.print(f"[{style}][{tag}][/] {message}")
+        self.console.print(f"[{style}][{tag}][/] {safe_msg}")
 
     def render_plan_table(self, micro_tasks: list[dict[str, Any]]) -> None:
         table = Table(title="Micro-Task Queue", box=ROUNDED, header_style="bold cyan")
@@ -389,7 +391,7 @@ class TerminalUI:
         )
         if state.error:
             body += f"\nError: {state.error}"
-        self.console.print(Panel(body, title="Task Summary", border_style=border, box=ROUNDED))
+        self.console.print(Panel(Text(body), title="Task Summary", border_style=border, box=ROUNDED))
 
     def run_repl(self) -> None:
         self.render_banner()

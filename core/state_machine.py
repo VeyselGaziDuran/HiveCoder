@@ -155,11 +155,17 @@ class StateMachine:
         if not self.state_file.exists():
             self.state = None
             return None
-        raw = self.state_file.read_text(encoding="utf-8").strip()
+        raw = self.state_file.read_text(encoding="utf-8", errors="replace").strip()
         if not raw:
             self.state = None
             return None
-        self.state = TaskState.model_validate_json(raw)
+        try:
+            self.state = TaskState.model_validate_json(raw)
+        except ValueError:
+            corrupt = self.state_file.with_suffix(".corrupt.json")
+            os.replace(self.state_file, corrupt)
+            self.state = None
+            return None
         return self.state
 
     def clear(self) -> None:
@@ -332,6 +338,8 @@ class StateMachine:
         unproven = [mt.id for mt in st.micro_tasks if not (mt.inspected and mt.validated)]
         if unproven:
             raise IllegalCompletionError(f"Micro-tasks without evidence: {', '.join(unproven)}")
+        if st.phase != Phase.COMPLETED and Phase.COMPLETED not in TRANSITIONS[st.phase]:
+            self.transition(Phase.PAUSED, "preparing completion")
         self.transition(Phase.COMPLETED, "all micro-tasks verified")
         return st
 
@@ -395,10 +403,15 @@ class TaskHistory:
     def load(self) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
-        raw = self.path.read_text(encoding="utf-8").strip()
+        raw = self.path.read_text(encoding="utf-8", errors="replace").strip()
         if not raw:
             return []
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            corrupt = self.path.with_suffix(".corrupt.json")
+            os.replace(self.path, corrupt)
+            return []
         return data if isinstance(data, list) else []
 
     def append(self, state: TaskState) -> dict[str, Any]:
