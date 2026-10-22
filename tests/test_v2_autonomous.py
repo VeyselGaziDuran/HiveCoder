@@ -984,6 +984,51 @@ def test_cycle_12_validator_self_cleanup_inspector_budget_and_submodule_probe(tm
     assert any("urllib.parse." in s for s in sigs)
 
 
+def test_cycle_13_class_docstring_decorated_method_attr_merge_and_conditional_top_preservation(tmp_path: Path) -> None:
+    """Verify class attributes merge cleanly when first method has @property/docstring and top-level try/except blocks are preserved."""
+    ws = tmp_path / "cycle13_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle13_mem", workspace=ws)
+
+    existing_src = (
+        "try:\n"
+        "    def load_driver() -> str:\n"
+        "        return 'native'\n"
+        "except Exception:\n"
+        "    def load_driver() -> str:\n"
+        "        return 'fallback'\n\n"
+        "class ServiceNode:\n"
+        '    """Core service node."""\n'
+        "    DEFAULT_PORT: int = 8080\n\n"
+        "    def ping(self) -> str:\n"
+        "        return f'pong:{self.DEFAULT_PORT}'\n"
+    )
+    (ws / "node.py").write_text(existing_src, encoding="utf-8")
+    bb.update_file_record("node.py", agent_note="Created ServiceNode")
+    bb.lock_verified_symbols(["node.py"])
+    verified = bb.get_verified_symbols("node.py")
+    assert "ServiceNode.DEFAULT_PORT" in verified
+    assert "load_driver" in verified
+
+    # Incoming code has a docstring AND a @property as its first method, and omits DEFAULT_PORT, ping(), and load_driver()
+    incoming_src = (
+        "class ServiceNode:\n"
+        '    """Core service node."""\n'
+        "    @property\n"
+        "    def url(self) -> str:\n"
+        "        return f'http://localhost:{self.DEFAULT_PORT}'\n"
+    )
+    merged = ASTPatcher.merge_preserving_symbols(existing_src, incoming_src, protected_symbols=verified)
+    ns: dict[str, Any] = {}
+    exec(compile(merged, "<cycle13_merged>", "exec"), ns)
+    node = ns["ServiceNode"]()
+    assert node.__doc__ == "Core service node."
+    assert node.url == "http://localhost:8080"
+    assert node.ping() == "pong:8080"
+    assert ns["load_driver"]() == "native"
+
+
+
 
 
 

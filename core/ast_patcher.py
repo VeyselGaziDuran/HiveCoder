@@ -39,6 +39,21 @@ def _node_symbol_names(node: ast.stmt) -> list[str]:
     if hasattr(ast, "TypeAlias") and isinstance(node, getattr(ast, "TypeAlias")):
         alias_id = getattr(getattr(node, "name", None), "id", None)
         return [alias_id] if alias_id else []
+    if isinstance(node, ast.If) and not _is_main_guard(node):
+        cond_names: list[str] = []
+        for sub in (*node.body, *node.orelse):
+            cond_names.extend(_node_symbol_names(sub))
+        return list(dict.fromkeys(cond_names))
+    if isinstance(node, ast.Try):
+        try_names: list[str] = []
+        for sub in (
+            *node.body,
+            *(s for h in node.handlers for s in h.body),
+            *node.orelse,
+            *node.finalbody,
+        ):
+            try_names.extend(_node_symbol_names(sub))
+        return list(dict.fromkeys(try_names))
     return []
 
 
@@ -196,7 +211,16 @@ class ASTPatcher:
                     injected = [""] + missing_method_snippets
                     working_lines[insert_idx:insert_idx] = "\n".join(injected).splitlines()
                 if missing_attr_snippets:
-                    cls_header_end = int(new_cls.body[0].lineno - 1) if new_cls.body else int(new_cls.lineno)
+                    if not new_cls.body:
+                        cls_header_end = int(new_cls.lineno)
+                    elif (
+                        isinstance(new_cls.body[0], ast.Expr)
+                        and isinstance(getattr(new_cls.body[0], "value", None), ast.Constant)
+                        and isinstance(new_cls.body[0].value.value, str)
+                    ):
+                        cls_header_end = int(new_cls.body[0].end_lineno or new_cls.body[0].lineno)
+                    else:
+                        cls_header_end = _node_line_range(new_cls.body[0])[0]
                     working_lines[cls_header_end:cls_header_end] = "\n".join(missing_attr_snippets).splitlines()
                 methods_restored = True
 

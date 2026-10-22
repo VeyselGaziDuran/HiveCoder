@@ -447,6 +447,10 @@ class Blackboard:
                 cls_name = cls.get("name", "")
                 if not cls_name:
                     continue
+                for attr_sig in cls.get("attributes", []):
+                    attr_name = attr_sig.split(":", 1)[0].strip()
+                    if attr_name and not (attr_name.startswith("__") and attr_name.endswith("__")):
+                        own_names.add(f"{cls_name}.{attr_name}")
                 for m_sig in cls.get("methods", []):
                     match = re.search(r"def\s+(\w+)", m_sig)
                     if match:
