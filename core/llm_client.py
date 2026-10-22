@@ -111,12 +111,19 @@ def _clean_path(raw: str) -> str:
     return ""
 
 
+_STRAY_TAG_LINE = re.compile(
+    r"^\s*<{2,3}\s*(?:/|END(?:[_ ]|\b)|FILE_PATH\b|CODE\b|RELAY_NOTE\b).*?>{2,3}\s*$",
+    re.IGNORECASE,
+)
+_JSON_NUMBER = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
+
+
 def _normalize_code(code: str) -> str:
     code = strip_code_fences(code)
     lines = code.splitlines()
-    while lines and not lines[0].strip():
+    while lines and (not lines[0].strip() or _STRAY_TAG_LINE.match(lines[0])):
         lines.pop(0)
-    while lines and not lines[-1].strip():
+    while lines and (not lines[-1].strip() or _STRAY_TAG_LINE.match(lines[-1])):
         lines.pop()
     return ("\n".join(lines) + "\n") if lines else ""
 
@@ -273,6 +280,12 @@ def _repair_json(src: str) -> str:
             if not stack:
                 break
             continue
+        if ch.isdigit() or (ch == "-" and i + 1 < n and src[i + 1].isdigit()):
+            num_match = _JSON_NUMBER.match(src, i)
+            if num_match:
+                out.append(num_match.group(0))
+                i = num_match.end()
+                continue
         if ch.isalpha() or ch == "_":
             j = i
             while j < n and (src[j].isalnum() or src[j] in "_-$"):
@@ -512,7 +525,10 @@ class LLMClient:
         base = self.config.get("ollama", {}).get("base_url", "http://localhost:11434").rstrip("/")
         try:
             resp = self.session.get(f"{base}/api/tags", timeout=3)
-            models = [m.get("name", "") for m in resp.json().get("models", [])]
+            if resp.status_code >= 400:
+                return False, f"Ollama HTTP {resp.status_code} at {base}"
+            payload = resp.json()
+            models = [m.get("name", "") for m in (payload.get("models", []) if isinstance(payload, dict) else [])]
         except (requests.RequestException, ValueError):
             return False, f"Ollama not reachable at {base}"
         if self.model not in models and f"{self.model}:latest" not in models:

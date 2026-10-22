@@ -860,6 +860,30 @@ def test_cycle_8_corrupt_state_recovery_resume_all_done_and_rich_markup_escape(t
     assert "AssertionError" in buf.getvalue()
 
 
+def test_cycle_9_stray_end_tag_stripping_and_scientific_notation_json_repair() -> None:
+    """Verify mismatched Nano-Tag closers are stripped from code and scientific notation survives _repair_json."""
+    from core.llm_client import extract_json, parse_nano_tags
+
+    # 1. Small model closes <<<CODE>>> with <<<END_FILE_PATH>>> or <<<END>>> instead of <<<END_CODE>>>
+    raw_nano = (
+        "<<<FILE_PATH>>>\ncalc.py\n<<<END_FILE_PATH>>>\n"
+        "<<<CODE>>>\ndef inc(x: int) -> int:\n    return x + 1\n<<<END_FILE_PATH>>>\n"
+        "<<<RELAY_NOTE>>>\nImplemented inc(x).\n<<<END_RELAY_NOTE>>>"
+    )
+    parsed = parse_nano_tags(raw_nano)
+    assert parsed.has_code is True
+    assert "<<<END_FILE_PATH>>>" not in parsed.files[0].code
+    assert parsed.files[0].code.strip() == "def inc(x: int) -> int:\n    return x + 1"
+
+    # 2. _repair_json preserves scientific notation (1e-5, 2.5E+3) when repairing unquoted keys / Python literals
+    broken_json = "{approved: True, tol: 1e-5, max_val: 2.5E+3, issues: [],}"
+    repaired = extract_json(broken_json, expect=dict)
+    assert repaired["approved"] is True
+    assert repaired["tol"] == 1e-5
+    assert repaired["max_val"] == 2500.0
+
+
+
 
 
 
