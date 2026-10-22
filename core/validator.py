@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import py_compile
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -150,28 +151,31 @@ class Validator:
         files = list(rel_paths)
         errors: list[str] = []
         tmp_dir = self.workspace / HIVE_TMP / "compile"
-        for rel in files:
-            path = self.workspace / rel
-            if not path.exists():
-                errors.append(f"{rel}: file not found")
-                continue
-            suffix = path.suffix.lower()
-            if suffix == ".py":
-                tmp_dir.mkdir(parents=True, exist_ok=True)
-                cfile = tmp_dir / (rel.replace("/", "__") + "c")
-                try:
-                    py_compile.compile(str(path), cfile=str(cfile), doraise=True)
-                except py_compile.PyCompileError as exc:
-                    errors.append(f"{rel}: {exc.msg.strip()}")
-            elif suffix == ".json":
-                try:
-                    json.loads(path.read_text(encoding="utf-8"))
-                except json.JSONDecodeError as exc:
-                    errors.append(f"{rel}: invalid JSON at line {exc.lineno} col {exc.colno}: {exc.msg}")
-            elif suffix in BRACE_CHECK_SUFFIXES:
-                err = _check_brace_balance(path.read_text(encoding="utf-8", errors="replace"))
-                if err:
-                    errors.append(f"{rel}: syntax error ({err})")
+        try:
+            for rel in files:
+                path = self.workspace / rel
+                if not path.exists():
+                    errors.append(f"{rel}: file not found")
+                    continue
+                suffix = path.suffix.lower()
+                if suffix == ".py":
+                    tmp_dir.mkdir(parents=True, exist_ok=True)
+                    cfile = tmp_dir / (rel.replace("/", "__") + "c")
+                    try:
+                        py_compile.compile(str(path), cfile=str(cfile), doraise=True)
+                    except py_compile.PyCompileError as exc:
+                        errors.append(f"{rel}: {exc.msg.strip()}")
+                elif suffix == ".json":
+                    try:
+                        json.loads(path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError as exc:
+                        errors.append(f"{rel}: invalid JSON at line {exc.lineno} col {exc.colno}: {exc.msg}")
+                elif suffix in BRACE_CHECK_SUFFIXES:
+                    err = _check_brace_balance(path.read_text(encoding="utf-8", errors="replace"))
+                    if err:
+                        errors.append(f"{rel}: syntax error ({err})")
+        finally:
+            shutil.rmtree(self.workspace / HIVE_TMP, ignore_errors=True)
         if errors:
             return ValidationResult(False, "syntax", "\n".join(errors), files)
         return ValidationResult(True, "syntax", f"py_compile OK ({len(files)} file(s))", files)
@@ -207,6 +211,8 @@ class Validator:
             return ValidationResult(False, "pytest", _tail(f"pytest timed out after {self.pytest_timeout}s\n{out}"), targets)
         except FileNotFoundError as exc:
             return ValidationResult(False, "pytest", f"python executable not found: {exc}", targets)
+        finally:
+            shutil.rmtree(self.workspace / HIVE_TMP, ignore_errors=True)
         output = _tail((proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr.strip() else ""))
         if proc.returncode == 0:
             return ValidationResult(True, "pytest", output.strip(), targets, proc.returncode)

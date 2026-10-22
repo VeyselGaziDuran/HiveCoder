@@ -76,7 +76,9 @@ class SignatureProbe:
         if symbol_name:
             target = getattr(mod, symbol_name, None)
             if target is None:
-                return []
+                return self.inspect_symbol(f"{module_name}.{symbol_name}")[:4]
+            if inspect.ismodule(target):
+                return self.inspect_symbol(f"{module_name}.{symbol_name}")[:4]
             sig = self._format_callable(f"{module_name}.{symbol_name}", target)
             return [sig] if sig else []
 

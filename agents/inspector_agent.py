@@ -8,7 +8,7 @@ from typing import Optional
 
 from agents.base_agent import BaseAgent
 from core.blackboard import Blackboard
-from core.context_builder import ContextBuilder, format_task_spec
+from core.context_builder import ContextBuilder, _middle_truncate, format_task_spec
 from core.llm_client import LLMClient, LLMParseError, extract_json
 from core.state_machine import MicroTask
 
@@ -111,10 +111,14 @@ class InspectorAgent(BaseAgent):
     def _llm_review(self, task: MicroTask, targets: list[str]) -> InspectionVerdict:
         spec = format_task_spec(task)
         memory = self.blackboard.get_compact_memory(target_files=targets, max_notes=8)
+        per_file_budget = max(600, int(self.context_builder.max_chars * 0.5) // max(1, len(targets)))
         snippets: list[str] = []
         for rel in targets:
             text = (self.workspace / rel).read_text(encoding="utf-8", errors="replace")
-            snippets.append(f"### FILE: {rel}\n```python\n{text}\n```")
+            if len(text) > per_file_budget:
+                text = _middle_truncate(text, per_file_budget)
+            lang = Path(rel).suffix.lstrip(".") or "text"
+            snippets.append(f"### FILE: {rel}\n```{lang}\n{text}\n```")
         user_prompt = (
             f"{spec}\n\n"
             f"Relay note left by agent: {task.relay_note}\n\n"

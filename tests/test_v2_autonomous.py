@@ -952,6 +952,39 @@ def test_cycle_11_stub_markers_ignore_string_literals_and_multi_stmt_guards(tmp_
     assert issues[0].line == 1
 
 
+def test_cycle_12_validator_self_cleanup_inspector_budget_and_submodule_probe(tmp_path: Path) -> None:
+    """Verify Validator cleans .hive_tmp immediately, InspectorAgent truncates large reviews, and SignatureProbe resolves submodules."""
+    from agents.inspector_agent import InspectorAgent
+    from core.context_builder import ContextBuilder
+    from core.state_machine import MicroTask
+    from core.validator import Validator
+
+    ws = tmp_path / "cycle12_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle12_mem", workspace=ws)
+
+    # 1. Validator.check_syntax removes .hive_tmp immediately even when called standalone
+    (ws / "mod.py").write_text("def ok() -> int:\n    return 1\n", encoding="utf-8")
+    val = Validator(ws)
+    assert val.check_syntax(["mod.py"]).passed is True
+    assert not (ws / ".hive_tmp").exists()
+
+    # 2. InspectorAgent._llm_review enforces per-file budget and language fence tag
+    (ws / "App.tsx").write_text("export const X = 1;\n" * 500, encoding="utf-8")
+    bb.update_file_record("App.tsx", agent_note="Created App.tsx")
+    ctx = ContextBuilder(bb, ws, max_chars=2400)
+    llm = TempTrackingLLMClient(DEFAULT_CONFIG, ['{"approved": true, "issues": [], "summary": "OK"}'])
+    inspector = InspectorAgent(llm, bb, ctx, ws, enable_llm_review=True)
+    mt = MicroTask(id="s1", title="Create App.tsx", target_file="App.tsx", kind="code", relay_note="Created App.tsx")
+    verdict = inspector.inspect(mt, ["App.tsx"])
+    assert verdict.approved is True
+
+    # 3. SignatureProbe resolves 'from urllib import parse' submodule callables
+    sigs = SignatureProbe().inspect_imports_in_source("from urllib import parse\n")
+    assert any("urllib.parse." in s for s in sigs)
+
+
+
 
 
 
