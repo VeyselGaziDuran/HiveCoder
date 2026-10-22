@@ -269,14 +269,20 @@ class ThermalGuard:
                     self._event("thermal", "cooldown cut short (turbo profile)")
                     break
                 if early_wakeup_enabled and self.sensor is not None and ticks >= 1:
-                    reading = self.sensor.read(polling_cooldown=True)
-                    if not reading.is_hot:
-                        self.early_wakeups += 1
-                        self._event(
-                            "thermal",
-                            "device returned to nominal temperature; waking up immediately",
-                        )
-                        break
+                    throughput_only_trigger = (
+                        self.last_reading is not None
+                        and "inference speed dropped" in self.last_reading.reason
+                    )
+                    elapsed_so_far = self.clock() - started
+                    if not throughput_only_trigger or elapsed_so_far >= total * 0.5:
+                        reading = self.sensor.read(polling_cooldown=True)
+                        if not reading.is_hot:
+                            self.early_wakeups += 1
+                            self._event(
+                                "thermal",
+                                "device returned to nominal temperature; waking up immediately",
+                            )
+                            break
                 remaining = self.remaining_cooldown()
                 if progress is not None and task_id is not None:
                     progress.update(task_id, completed=total - remaining, remaining=format_mmss(remaining))

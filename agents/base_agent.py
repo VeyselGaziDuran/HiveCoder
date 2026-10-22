@@ -106,7 +106,14 @@ class BaseAgent:
 
         default_norm = normalize_relpath(self.workspace, default_target)
         for idx, block in enumerate(parsed.files):
-            raw_path = block.path or default_norm
+            raw_path = (block.path or default_norm).strip()
+            if raw_path.startswith(("/", "\\")):
+                first_part = Path(raw_path.lstrip("/\\")).parts[0] if Path(raw_path.lstrip("/\\")).parts else ""
+                if first_part not in {
+                    "etc", "usr", "var", "tmp", "bin", "sbin", "dev", "proc",
+                    "sys", "root", "Users", "home", "private", "Library", "System", "Windows",
+                }:
+                    raw_path = raw_path.lstrip("/\\")
             try:
                 rel_path = normalize_relpath(self.workspace, raw_path)
             except ValueError:
@@ -155,6 +162,12 @@ class BaseAgent:
         """Build a zero-bloat context for ``task``, run the LLM, and persist output files."""
         bundle = self.context_builder.build(task, extra_files=extra_files)
         user_sections = [bundle.text]
+        if task.target_file.endswith(".py"):
+            existing_src = self.context_builder.read_file(task.target_file)
+            if existing_src:
+                live_sigs = format_probe_summary(SignatureProbe().inspect_imports_in_source(existing_src))
+                if live_sigs:
+                    user_sections.append(live_sigs)
         if extra_instructions.strip():
             user_sections.append(extra_instructions.strip())
         user_sections.append(NANO_TAG_INSTRUCTIONS)

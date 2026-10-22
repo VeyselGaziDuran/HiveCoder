@@ -217,8 +217,18 @@ class ArchitectAgent(BaseAgent):
                     deps[j].add(i)
 
         for i in range(n):
+            i_path = Path(code_tasks[i].target_file)
             for j in range(n):
                 if i == j or code_tasks[i].target_file == code_tasks[j].target_file:
+                    continue
+                j_path = Path(code_tasks[j].target_file)
+                if (
+                    i_path.name == "__init__.py"
+                    and j_path.name != "__init__.py"
+                    and (j_path.parent == i_path.parent or i_path.parent in j_path.parents)
+                    and not _mentions_file(code_tasks[j], code_tasks[i])
+                ):
+                    deps[i].add(j)
                     continue
                 if _mentions_file(code_tasks[i], code_tasks[j]) and not _mentions_file(code_tasks[j], code_tasks[i]):
                     deps[i].add(j)

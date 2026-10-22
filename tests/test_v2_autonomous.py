@@ -761,5 +761,54 @@ def test_cycle_4_5_import_dedup_subpackage_context_truncation_and_lifecycle(tmp_
     assert "big_b.py" not in bb.verified_symbols
 
 
+def test_cycle_6_7_code_toposort_init_ordering_and_git_guard_nested_memory(tmp_path: Path) -> None:
+    """Verify code dependency topological sort, __init__.py ordering, leading-slash normalization, and nested memory GitGuard."""
+    from agents.architect_agent import ArchitectAgent
+    from core.context_builder import ContextBuilder
+    from core.git_guard import GitGuard
+
+    ws = tmp_path / "cycle67_ws"
+    ws.mkdir()
+    mem = ws / "memory"
+    bb = Blackboard(mem, workspace=ws)
+    ctx = ContextBuilder(bb, ws)
+
+    # 1. Small model emits top-down plan: pkg/__init__.py -> main.py -> engine.py -> pkg/models.py
+    raw_plan = json.dumps(
+        {
+            "micro_tasks": [
+                {"id": "s1", "title": "Export package API", "target_file": "/pkg/__init__.py", "kind": "code", "description": "Re-export models"},
+                {"id": "s2", "title": "CLI entrypoint", "target_file": "/main.py", "kind": "code", "description": "Import run_engine from engine.py"},
+                {"id": "s3", "title": "Core engine", "target_file": "engine.py", "kind": "code", "description": "Use Item from pkg/models.py"},
+                {"id": "s4", "title": "Data models", "target_file": "pkg/models.py", "kind": "code", "description": "Define Item dataclass"},
+                {"id": "s5", "title": "Unit tests", "target_file": "tests/test_main.py", "kind": "test", "description": "Test main.py"},
+            ]
+        }
+    )
+    arch = ArchitectAgent(TempTrackingLLMClient(DEFAULT_CONFIG, [raw_plan]), bb, ctx, ws)
+    plan = arch.plan("Build packaged CLI")
+    ordered_targets = [mt.target_file for mt in plan]
+    # pkg/models.py must precede both pkg/__init__.py and engine.py, and engine.py must precede main.py!
+    assert ordered_targets.index("pkg/models.py") < ordered_targets.index("pkg/__init__.py")
+    assert ordered_targets.index("pkg/models.py") < ordered_targets.index("engine.py")
+    assert ordered_targets.index("engine.py") < ordered_targets.index("main.py")
+    assert ordered_targets[-1] == "tests/test_main.py"
+
+    # 2. GitGuard with memory/ nested inside workspace must NOT wipe memory/state.json on rollback
+    (ws / "app.py").write_text("x = 1\n", encoding="utf-8")
+    state_json = mem / "state.json"
+    state_json.write_text('{"task_id": "t1", "phase": "coding"}\n', encoding="utf-8")
+    guard = GitGuard(workspace=ws, store_dir=mem / "snapshots", enabled=True)
+    snap = guard.snapshot("before-step")
+    assert snap is not None
+    # Modify both app.py (should roll back) and memory/state.json (must NOT roll back)
+    (ws / "app.py").write_text("x = 999\n", encoding="utf-8")
+    state_json.write_text('{"task_id": "t1", "phase": "paused"}\n', encoding="utf-8")
+    assert guard.rollback(snap) is True
+    assert (ws / "app.py").read_text(encoding="utf-8") == "x = 1\n"
+    assert '"paused"' in state_json.read_text(encoding="utf-8")
+
+
+
 
 
