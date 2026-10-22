@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import json
 import os
 import re
+import tokenize
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -835,11 +837,22 @@ class Blackboard:
                         break
             return issues
 
-        for lineno, line in enumerate(lines, 1):
-            for pattern in comment_patterns:
-                if pattern.search(line):
-                    issues.append(ConsistencyIssue(rel, lineno, f"unfinished code marker: {line.strip()[:80]}"))
-                    break
+        try:
+            for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+                if tok.type == tokenize.COMMENT:
+                    lineno = tok.start[0]
+                    for pattern in comment_patterns:
+                        if pattern.search(tok.string):
+                            issues.append(
+                                ConsistencyIssue(rel, lineno, f"unfinished code marker: {lines[lineno - 1].strip()[:80]}")
+                            )
+                            break
+        except tokenize.TokenError:
+            for lineno, line in enumerate(lines, 1):
+                for pattern in comment_patterns:
+                    if pattern.search(line):
+                        issues.append(ConsistencyIssue(rel, lineno, f"unfinished code marker: {line.strip()[:80]}"))
+                        break
 
         def _is_abstract_or_overload(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
             for dec in fn_node.decorator_list:
@@ -860,19 +873,19 @@ class Blackboard:
                 and isinstance(stmts[0].value.value, str)
             ):
                 stmts = stmts[1:]
-            if (
-                len(stmts) == 1
-                and isinstance(stmts[0], ast.Expr)
-                and isinstance(getattr(stmts[0], "value", None), ast.Constant)
-                and stmts[0].value.value is Ellipsis
-            ):
-                ln = stmts[0].lineno
-                issues.append(ConsistencyIssue(rel, ln, f"unfinished code marker: {lines[ln - 1].strip()[:80]}"))
-            for sub in ast.walk(fn_node):
-                if isinstance(sub, ast.Raise) and sub.exc is not None:
-                    exc_src = _unparse(sub.exc)
+            if len(stmts) == 1:
+                only = stmts[0]
+                if (
+                    isinstance(only, ast.Expr)
+                    and isinstance(getattr(only, "value", None), ast.Constant)
+                    and only.value.value is Ellipsis
+                ):
+                    ln = only.lineno
+                    issues.append(ConsistencyIssue(rel, ln, f"unfinished code marker: {lines[ln - 1].strip()[:80]}"))
+                elif isinstance(only, ast.Raise) and only.exc is not None:
+                    exc_src = _unparse(only.exc)
                     if exc_src == "NotImplementedError" or exc_src.startswith("NotImplementedError("):
-                        ln = sub.lineno
+                        ln = only.lineno
                         issues.append(ConsistencyIssue(rel, ln, f"unfinished code marker: {lines[ln - 1].strip()[:80]}"))
 
         for node in _iter_module_statements(tree.body):

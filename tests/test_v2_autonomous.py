@@ -927,6 +927,32 @@ def test_cycle_10_ast_stub_detection_protocols_and_test_relative_imports(tmp_pat
     assert norm == "from app import get_words\n"
 
 
+def test_cycle_11_stub_markers_ignore_string_literals_and_multi_stmt_guards(tmp_path: Path) -> None:
+    """Verify real implementations with fallback NotImplementedError or string literals pass find_stub_markers."""
+    ws = tmp_path / "cycle11_ws"
+    ws.mkdir()
+    bb = Blackboard(tmp_path / "cycle11_mem", workspace=ws)
+
+    marker_word = chr(84) + "ODO"
+    implemented_src = (
+        f'HEADER = "# {marker_word}: task list"\n\n'
+        "def dispatch(fmt: str) -> str:\n"
+        "    if fmt == 'json':\n"
+        "        return '{}'\n"
+        "    raise NotImplementedError(f'Unsupported: {fmt}')\n"
+    )
+    (ws / "dispatcher.py").write_text(implemented_src, encoding="utf-8")
+    assert bb.find_stub_markers("dispatcher.py") == []
+
+    # A real comment marker must still be caught via tokenize.COMMENT
+    comment_stub_src = f"x = 1  # {marker_word}: finish later\n"
+    (ws / "comment_stub.py").write_text(comment_stub_src, encoding="utf-8")
+    issues = bb.find_stub_markers("comment_stub.py")
+    assert len(issues) == 1
+    assert issues[0].line == 1
+
+
+
 
 
 
