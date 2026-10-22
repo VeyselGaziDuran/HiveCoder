@@ -1,7 +1,8 @@
-"""HiveOrchestrator: coordinates Architect, Coder, Inspector, Tester, Validator, Medic, ThermalGuard, GitGuard, and GC."""
+"""HiveOrchestrator: coordinates Architect, Coder, Inspector, Tester, Validator, Medic, Probes, MemoryLifecycle, ThermalGuard, GitGuard, and GC."""
 
 from __future__ import annotations
 
+import hashlib
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -18,6 +19,7 @@ from core.context_builder import ContextBuilder
 from core.garbage_collector import GarbageCollector
 from core.git_guard import GitGuard
 from core.llm_client import LLMClient
+from core.memory_lifecycle import MemoryLifecycle
 from core.state_machine import (
     MicroTask,
     NoActiveTaskError,
@@ -27,13 +29,16 @@ from core.state_machine import (
     TaskState,
 )
 from core.thermal_guard import ThermalGuard
+from core.thermal_sensor import ThermalSensor
 from core.validator import Validator
+from probes.package_radar import PackageRadarProbe
+from probes.runtime_probe import RuntimeProbe
 
 EventCallback = Callable[[str, str, dict[str, Any]], None]
 
 
 class HiveOrchestrator:
-    """Coordinates planning, coding, inspection, validation, repair, and thermal pacing."""
+    """Coordinates planning, coding, inspection, validation, repair, memory lifecycle, and thermal pacing."""
 
     def __init__(
         self,
@@ -43,6 +48,7 @@ class HiveOrchestrator:
         console: Any = None,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.time,
+        thermal_sensor: Optional[ThermalSensor] = None,
     ) -> None:
         self.config = config
         self.on_event = on_event
@@ -59,8 +65,27 @@ class HiveOrchestrator:
         self.blackboard = Blackboard(self.memory_dir)
         self.gc = GarbageCollector()
 
+        mem_cfg = self.config.get("memory_lifecycle", {})
+        self.memory_lifecycle = MemoryLifecycle(
+            flush_notes_on_complete=bool(mem_cfg.get("flush_notes_on_complete", True)),
+            remove_state_on_complete=bool(mem_cfg.get("remove_state_on_complete", True)),
+            remove_snapshots_on_complete=bool(mem_cfg.get("remove_snapshots_on_complete", True)),
+        )
+
+        probes_cfg = self.config.get("probes", {})
+        self.runtime_probe = RuntimeProbe()
+        self.package_radar = PackageRadarProbe(
+            online_enabled=bool(probes_cfg.get("online_package_radar", True)),
+            timeout=float(probes_cfg.get("radar_timeout_seconds", 2.0)),
+        )
+
+        thermal_cfg = self.config.setdefault("thermal", {})
+        sensor = thermal_sensor
+        if sensor is None and bool(thermal_cfg.get("sensor_enabled", True)):
+            sensor = ThermalSensor()
+
         self.thermal = ThermalGuard(
-            settings=self.config.setdefault("thermal", {}),
+            settings=thermal_cfg,
             unloader=self.llm.unload,
             sleeper=sleeper,
             clock=clock,
@@ -68,9 +93,9 @@ class HiveOrchestrator:
             show_progress=console is not None,
             on_state_change=self._sync_thermal_state,
             on_event=lambda kind, msg: self._emit(kind, msg),
+            sensor=sensor,
         )
 
-    # ------------------------------------------------------------------ helpers
     def _emit(self, kind: str, message: str, **data: Any) -> None:
         self.state_machine.log_event(kind, message=message, **data)
         if self.on_event is not None:
@@ -88,6 +113,24 @@ class HiveOrchestrator:
             path = (HIVE_ROOT / path).resolve()
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _populate_runtime_context(self, goal: str) -> None:
+        """Run RuntimeProbe and PackageRadarProbe to anchor language/library versions on the Blackboard."""
+        probes_cfg = self.config.get("probes", {})
+        if not bool(probes_cfg.get("enabled", True)):
+            return
+        env_info = self.runtime_probe.inspect()
+        sections = [env_info.to_markdown()]
+        pkg_infos = self.package_radar.scan_goal_packages(goal)
+        if pkg_infos:
+            pkg_lines = ["## PACKAGE RADAR"] + [f"- {p.format_brief()}" for p in pkg_infos]
+            sections.append("\n".join(pkg_lines))
+        self.blackboard.set_runtime_context("\n\n".join(sections))
+
+    def _verified_task_ids(self) -> list[str]:
+        if self.state_machine.state is None:
+            return []
+        return [mt.id for mt in self.state_machine.state.micro_tasks if mt.status == "done"]
 
     def _build_runtime_components(
         self, workspace: Path
@@ -138,13 +181,13 @@ class HiveOrchestrator:
         st.metrics.work_seconds = round(st.metrics.work_seconds + result.elapsed_seconds, 3)
         self.state_machine.save()
 
-    # ------------------------------------------------------------------ public API
     def run_task(self, goal: str, workspace: str | Path | None = None) -> TaskState:
         """Start and execute a brand-new autonomous software task."""
         ws = self._resolve_workspace(workspace)
         self.blackboard.bind_workspace(ws, reset_if_changed=True)
         self.blackboard.reset()
         self.blackboard.scan_workspace(agent="initial_scan")
+        self._populate_runtime_context(goal)
 
         state = self.state_machine.new_task(goal=goal, workspace=ws)
         self._sync_thermal_state(self.thermal.export_state())
@@ -192,6 +235,8 @@ class HiveOrchestrator:
         ws.mkdir(parents=True, exist_ok=True)
         self.blackboard.bind_workspace(ws, reset_if_changed=False)
         self.blackboard.scan_workspace(agent="resume_scan")
+        if not self.blackboard.data.get("runtime_context"):
+            self._populate_runtime_context(state.goal)
 
         (
             _ctx,
@@ -219,6 +264,14 @@ class HiveOrchestrator:
         if interrupted:
             self.blackboard.scan_workspace(agent="post_rollback_scan")
 
+        # Purge any relay notes left by interrupted/unverified micro-tasks
+        purged = self.memory_lifecycle.purge_unverified_notes(
+            self.blackboard,
+            verified_task_ids=self._verified_task_ids(),
+        )
+        if purged:
+            self._emit("memory_gc", f"Purged {purged} unverified relay note(s) before resume.")
+
         if not state.micro_tasks:
             self.state_machine.transition(Phase.PLANNING, "resuming at planning phase")
             plan = architect.plan(state.goal)
@@ -230,7 +283,6 @@ class HiveOrchestrator:
 
         return self._execute_loop(ws, validator, git_guard, coder, tester, inspector, medic)
 
-    # ------------------------------------------------------------------ core loop
     def _execute_loop(
         self,
         workspace: Path,
@@ -302,7 +354,6 @@ class HiveOrchestrator:
                         note=agent_result.relay_note,
                     )
 
-                    # Inspection stage
                     self.state_machine.transition(Phase.INSPECTING, f"inspecting {mt.id}")
                     verdict = inspector.inspect(mt, agent_result.files_written)
                     if inspector.enable_llm_review:
@@ -331,7 +382,6 @@ class HiveOrchestrator:
                             )
                     else:
                         self._emit("inspection_approved", f"[{mt.id}] InspectorAgent approved {mt.target_file}")
-                        # Validation stage
                         self.state_machine.transition(Phase.VALIDATING, f"validating {mt.id}")
                         val_res = validator.validate(mt.files_written, run_tests=True)
                         gc_rep = self.gc.collect(workspace)
@@ -340,6 +390,7 @@ class HiveOrchestrator:
                         if val_res.passed:
                             self.state_machine.mark_validated(mt.id, True, val_res.summary())
                             self.state_machine.complete_micro_task(mt.id)
+                            self.blackboard.lock_verified_symbols(mt.files_written)
                             self._emit(
                                 "micro_done",
                                 f"[{mt.id}] Verified & completed ({val_res.stage}).",
@@ -367,9 +418,8 @@ class HiveOrchestrator:
                                     mt, mt.last_error or val_res.summary(), workspace, git_guard
                                 )
 
-                # Thermal management between micro-tasks
                 step_elapsed = max(0.01, time.time() - step_started)
-                self.thermal.record_task(step_elapsed)
+                self.thermal.record_task(step_elapsed, response_chars=agent_result.response_chars)
                 if self.state_machine.next_pending() is not None:
                     if self.thermal.needs_cooldown():
                         self.state_machine.transition(Phase.COOLING, "deep thermal cooldown triggered")
@@ -380,16 +430,31 @@ class HiveOrchestrator:
                         self.thermal.micro_pause()
                         self.state_machine.transition(Phase.CODING, "next micro-task")
 
-            # Finalize whole task
             final_gc = self.gc.collect(workspace)
             state.metrics.gc_items_removed += final_gc.count
             self.state_machine.finish()
             self.history.append(state)
-            self._emit("task_completed", f"Task {state.task_id} completed with 100% verified micro-tasks.")
+
+            cleanup = self.memory_lifecycle.finalize_completed_task(
+                blackboard=self.blackboard,
+                state_machine=self.state_machine,
+                git_guard=git_guard,
+                gc=self.gc,
+                workspace=workspace,
+            )
+            state.metrics.gc_items_removed += cleanup.gc_items_removed
+            self._emit(
+                "task_completed",
+                f"Task {state.task_id} completed; {cleanup.purged_notes} ephemeral note(s) cleaned.",
+            )
             return state
         except KeyboardInterrupt:
-            self._emit("paused", "Interrupted by user (Ctrl+C). State saved for /resume.")
+            self._emit("paused", "Interrupted by user (Ctrl+C). Cleaning unverified notes and saving state.")
             self.state_machine.pause("KeyboardInterrupt")
+            self.memory_lifecycle.purge_unverified_notes(
+                self.blackboard,
+                verified_task_ids=self._verified_task_ids(),
+            )
             return state
 
     def _enter_infirmary(
@@ -402,10 +467,12 @@ class HiveOrchestrator:
         medic: MedicAgent,
         max_medic_attempts: int,
     ) -> bool:
-        """Run the Infirmary (MedicAgent -> InspectorAgent -> Validator) loop."""
+        """Run the Infirmary (MedicAgent -> InspectorAgent -> Validator) loop with stagnation loop-breaker."""
         state = self.state_machine.state
         assert state is not None
         current_report = failure_report
+        seen_hashes: set[str] = set()
+        base_temp = float(self.config.get("generation", {}).get("temperature", 0.2))
 
         for attempt in range(1, max_medic_attempts + 1):
             if state.phase != Phase.INFIRMARY:
@@ -414,6 +481,19 @@ class HiveOrchestrator:
             mt.medic_attempts += 1
             state.metrics.medic_runs += 1
             patient_file = medic.select_patient_file(mt, current_report)
+            patient_abs = workspace / patient_file
+            if patient_abs.is_file():
+                seen_hashes.add(hashlib.sha1(patient_abs.read_bytes()).hexdigest())
+
+            attempt_temp: Optional[float] = None
+            loop_hint = ""
+            if attempt > 1:
+                attempt_temp = min(0.85, round(base_temp + 0.25 * (attempt - 1), 2))
+                loop_hint = (
+                    f"Previous repair attempt {attempt - 1} did not resolve the defect. "
+                    "Do NOT repeat the previous implementation verbatim; change the faulty logic or import."
+                )
+
             self._emit(
                 "infirmary",
                 f"[{mt.id}] MedicAgent attempt {attempt}/{max_medic_attempts} on {patient_file}",
@@ -422,11 +502,28 @@ class HiveOrchestrator:
                 patient=patient_file,
             )
 
-            med_result = medic.repair(mt, current_report, broken_file=patient_file, attempt=attempt)
+            med_result = medic.repair(
+                mt,
+                current_report,
+                broken_file=patient_file,
+                attempt=attempt,
+                temperature=attempt_temp,
+                loop_breaker_hint=loop_hint,
+            )
             self._record_agent_metrics(med_result)
             if not med_result.success:
                 current_report = med_result.error or current_report
                 continue
+
+            if patient_abs.is_file():
+                new_hash = hashlib.sha1(patient_abs.read_bytes()).hexdigest()
+                if new_hash in seen_hashes and attempt < max_medic_attempts:
+                    self._emit(
+                        "loop_breaker",
+                        f"[{mt.id}] Identical file hash detected on attempt {attempt}; escalating temperature.",
+                        micro_id=mt.id,
+                    )
+                seen_hashes.add(new_hash)
 
             self.state_machine.record_files(mt.id, med_result.files_written, med_result.relay_note)
             self._emit(
@@ -458,6 +555,7 @@ class HiveOrchestrator:
                 state.metrics.medic_successes += 1
                 self.state_machine.mark_validated(mt.id, True, val_res.summary())
                 self.state_machine.complete_micro_task(mt.id)
+                self.blackboard.lock_verified_symbols(mt.files_written)
                 self._emit(
                     "infirmary_healed",
                     f"[{mt.id}] MedicAgent repaired {patient_file} on attempt {attempt}.",
@@ -485,6 +583,10 @@ class HiveOrchestrator:
             git_guard.rollback(mt.snapshot)
             self.blackboard.scan_workspace(agent="rollback_scan")
             self._emit("rollback", f"[{mt.id}] Rolled workspace back to snapshot {mt.snapshot[:8]}")
+        self.memory_lifecycle.purge_unverified_notes(
+            self.blackboard,
+            verified_task_ids=self._verified_task_ids(),
+        )
         gc_rep = self.gc.collect(workspace)
         state.metrics.gc_items_removed += gc_rep.count
         self.state_machine.fail_micro_task(mt.id, error)
@@ -493,7 +595,6 @@ class HiveOrchestrator:
         self._emit("task_failed", f"Task {state.task_id} failed on micro-task {mt.id}.")
         return state
 
-    # ------------------------------------------------------------------ interactive controls
     def set_thermal(self, profile: str, minutes: Optional[float] = None) -> dict[str, Any]:
         self.thermal.set_profile(profile, cooldown_minutes=minutes)
         save_config(self.config)

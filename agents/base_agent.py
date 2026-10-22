@@ -13,10 +13,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from core.ast_patcher import ASTPatcher
 from core.blackboard import Blackboard, normalize_relpath
 from core.context_builder import ContextBuilder
 from core.llm_client import LLMClient, NanoResponse, parse_nano_tags
 from core.state_machine import MicroTask
+from probes.signature_probe import SignatureProbe, format_probe_summary
 
 
 @dataclass
@@ -73,10 +75,18 @@ class BaseAgent:
         self.context_builder = context_builder
         self.workspace = Path(workspace).resolve()
 
-    def _invoke_isolated(self, system: str, user_prompt: str) -> tuple[str, float]:
+    def _invoke_isolated(
+        self,
+        system: str,
+        user_prompt: str,
+        temperature: Optional[float] = None,
+    ) -> tuple[str, float]:
         """Execute a single zero-history LLM call and register exchange size."""
         started = time.time()
-        response = self.llm.complete(system=system, user=user_prompt)
+        if temperature is not None:
+            response = self.llm.complete(system=system, user=user_prompt, temperature=temperature)
+        else:
+            response = self.llm.complete(system=system, user=user_prompt)
         elapsed = time.time() - started
         self.context_builder.register_exchange(len(system) + len(user_prompt), len(response))
         return response, elapsed
@@ -99,8 +109,18 @@ class BaseAgent:
             rel_path = normalize_relpath(self.workspace, raw_path)
             abs_path = self.workspace / rel_path
             abs_path.parent.mkdir(parents=True, exist_ok=True)
+            final_code = block.code
+            if abs_path.is_file() and rel_path.endswith(".py"):
+                protected = self.blackboard.get_verified_symbols(rel_path)
+                if protected:
+                    existing_code = abs_path.read_text(encoding="utf-8", errors="replace")
+                    final_code = ASTPatcher.merge_preserving_symbols(
+                        existing_source=existing_code,
+                        incoming_source=block.code,
+                        protected_symbols=protected,
+                    )
             tmp_path = abs_path.with_name(f".{abs_path.name}.{os.getpid()}.tmp")
-            tmp_path.write_text(block.code, encoding="utf-8")
+            tmp_path.write_text(final_code, encoding="utf-8")
             os.replace(tmp_path, abs_path)
             written.append(rel_path)
             note_for_file = relay_note if idx == len(parsed.files) - 1 else ""

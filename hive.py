@@ -46,7 +46,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--thermal",
-        choices=["eco", "balanced", "turbo"],
+        choices=["adaptive", "eco", "balanced", "turbo"],
         default=None,
         help="Override thermal profile for this session.",
     )

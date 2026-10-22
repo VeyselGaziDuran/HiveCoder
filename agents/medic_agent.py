@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Optional
 
 from agents.base_agent import AgentResult, BaseAgent, NANO_TAG_INSTRUCTIONS
+from core.ast_patcher import ASTPatcher
 from core.blackboard import normalize_relpath
 from core.context_builder import format_task_spec
 from core.llm_client import parse_nano_tags
 from core.state_machine import MicroTask
+from probes.signature_probe import SignatureProbe, format_probe_summary
 
 MEDIC_SYSTEM_PROMPT = """\
 Repair the target file that failed inspection or automated validation (`py_compile` / `pytest`).
@@ -51,6 +53,8 @@ class MedicAgent(BaseAgent):
         error_output: str,
         broken_file: Optional[str] = None,
         attempt: int = 1,
+        temperature: Optional[float] = None,
+        loop_breaker_hint: str = "",
     ) -> AgentResult:
         """Run an isolated Infirmary repair session for ``broken_file``."""
         patient = broken_file or self.select_patient_file(task, error_output)
@@ -66,19 +70,36 @@ class MedicAgent(BaseAgent):
         memory = self.blackboard.get_compact_memory(target_files=[patient], max_notes=10)
         naive_chars = self.context_builder.naive_chars() + len(spec)
 
+        line_window = ASTPatcher.extract_traceback_window(current_code, error_output)
+        live_sigs = format_probe_summary(SignatureProbe().inspect_imports_in_source(current_code))
+
+        extra_sections: list[str] = []
+        if line_window:
+            extra_sections.append(f"## FOCUS AREA AROUND ERROR LINE\n```\n{line_window}\n```")
+        if live_sigs:
+            extra_sections.append(live_sigs)
+        if loop_breaker_hint.strip():
+            extra_sections.append(f"## LOOP-BREAKER DIRECTIVE\n{loop_breaker_hint.strip()}")
+        extra_text = ("\n\n".join(extra_sections) + "\n\n") if extra_sections else ""
+
         user_prompt = (
             f"# INFIRMARY REPAIR (Attempt {attempt})\n"
             f"Patient file: {patient}\n\n"
             f"{spec}\n\n"
             f"## FAILURE TRACEBACK / INSPECTION REPORT\n"
             f"```\n{error_output.strip()[-3500:]}\n```\n\n"
+            f"{extra_text}"
             f"{memory}\n\n"
             f"## BROKEN FILE CONTENT ({patient})\n"
             f"<<<CURRENT_FILE>>>\n{current_code}<<<END_CURRENT_FILE>>>\n\n"
             f"{NANO_TAG_INSTRUCTIONS}"
         )
 
-        raw, elapsed = self._invoke_isolated(self.system_prompt, user_prompt)
+        raw, elapsed = self._invoke_isolated(
+            self.system_prompt,
+            user_prompt,
+            temperature=temperature,
+        )
         parsed = parse_nano_tags(raw)
         tokens_saved = max(0, (naive_chars - len(user_prompt)) // 4)
         if not parsed.has_code:
