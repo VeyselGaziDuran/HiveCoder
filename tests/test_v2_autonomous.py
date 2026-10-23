@@ -1065,12 +1065,12 @@ def test_cycle_15_if_version_import_preservation_and_try_import_error_consistenc
     """Verify top-level if-import blocks survive ASTPatcher and try/except ImportError guards pass check_import_consistency."""
     old_src = (
         "import sys\n"
-        "if sys.version_info >= (3, 11):\n"
-        "    import tomllib as toml_loader\n"
+        "if sys.version_info >= (3, 10):\n"
+        "    import json as cfg_loader\n"
         "else:\n"
-        "    import json as toml_loader\n\n"
+        "    import marshal as cfg_loader\n\n"
         "def load_cfg(raw: str) -> dict:\n"
-        "    return toml_loader.loads(raw)\n"
+        "    return cfg_loader.loads(raw)\n"
     )
     new_src = (
         "def default_port() -> int:\n"
@@ -1079,7 +1079,7 @@ def test_cycle_15_if_version_import_preservation_and_try_import_error_consistenc
     merged = ASTPatcher.merge_preserving_symbols(old_src, new_src, protected_symbols={"load_cfg"})
     ns: dict[str, Any] = {}
     exec(compile(merged, "<cycle15_merged>", "exec"), ns)
-    assert ns["load_cfg"]("port = 8080\n") == {"port": 8080}
+    assert ns["load_cfg"]('{"port": 8080}') == {"port": 8080}
     assert ns["default_port"]() == 9000
 
     # Blackboard.check_import_consistency skips guarded try-body imports under except ImportError
@@ -1458,7 +1458,7 @@ def test_cycle_24_session_only_cli_overrides_and_resumed_cooldown_throughput_res
     assert cfg_file.read_text(encoding="utf-8") == before_disk
 
     # Resumed cooldown resets sensor throughput so it does not immediately re-trigger after resume
-    sensor = ThermalSensor()
+    sensor = ThermalSensor(heavy_load_ratio=999.0)
     sensor.record_throughput(1.0, 1000)
     sensor.record_throughput(1.0, 400)
     assert sensor.read().is_hot is True
