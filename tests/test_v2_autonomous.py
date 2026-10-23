@@ -1477,6 +1477,71 @@ def test_cycle_24_session_only_cli_overrides_and_resumed_cooldown_throughput_res
     assert sensor.read().is_hot is False
 
 
+def test_cycle_25_property_setter_preservation_src_relative_imports_and_traceback_isolation() -> None:
+    """Verify @property setter survives when getter is re-emitted, src/tests relative imports normalize, and traceback lines do not bleed across files."""
+    existing_src = (
+        "class Wallet:\n"
+        "    def __init__(self, balance: int = 0) -> None:\n"
+        "        self._balance = balance\n\n"
+        "    @property\n"
+        "    def balance(self) -> int:\n"
+        "        return self._balance\n\n"
+        "    @balance.setter\n"
+        "    def balance(self, value: int) -> None:\n"
+        "        self._balance = max(0, value)\n"
+    )
+    # Incoming re-emits @property balance and adds deposit(), but forgets @balance.setter
+    incoming_src = (
+        "class Wallet:\n"
+        "    def __init__(self, balance: int = 0) -> None:\n"
+        "        self._balance = balance\n\n"
+        "    @property\n"
+        "    def balance(self) -> int:\n"
+        "        return self._balance\n\n"
+        "    def deposit(self, amount: int) -> None:\n"
+        "        self.balance = self._balance + amount\n"
+    )
+    merged = ASTPatcher.merge_preserving_symbols(
+        existing_src,
+        incoming_src,
+        protected_symbols={"Wallet", "Wallet.balance"},
+    )
+    ns: dict[str, Any] = {}
+    exec(compile(merged, "<cycle25_merged>", "exec"), ns)
+    w = ns["Wallet"](10)
+    w.deposit(15)
+    assert w.balance == 25
+    w.balance = -5
+    assert w.balance == 0
+
+    # Relative import normalization for src/app.py, tests/test_app.py, and nested pkg/sub/mod.py
+    assert (
+        ASTPatcher.normalize_root_relative_imports("from .models import User\n", "src/app.py")
+        == "from models import User\n"
+    )
+    assert (
+        ASTPatcher.normalize_root_relative_imports("from .app import run\n", "tests/test_app.py")
+        == "from app import run\n"
+    )
+    assert (
+        ASTPatcher.normalize_root_relative_imports("from ...core import Base\n", "pkg/sub/mod.py")
+        == "from core import Base\n"
+    )
+    assert (
+        ASTPatcher.normalize_root_relative_imports("from ..core import Base\n", "pkg/sub/mod.py")
+        == "from ..core import Base\n"
+    )
+
+    # Traceback window for box.py must not steal line numbers from test_box.py:3 or timestamps 12:34:56
+    box_src = "line1 = 1\nline2 = 2\nline3 = 3\nline4 = 4\n"
+    tb_other_file = "2026-10-23T12:34:56 tests/test_box.py:3: AssertionError"
+    assert ASTPatcher.extract_traceback_window(box_src, tb_other_file, filepath="box.py") == ""
+    assert ">>    3 |" in ASTPatcher.extract_traceback_window(
+        box_src, "SyntaxError: invalid syntax (line 3)", filepath="box.py"
+    )
+
+
+
 
 
 

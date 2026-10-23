@@ -69,6 +69,41 @@ def _top_level_symbol_name(node: ast.stmt) -> Optional[str]:
     return names[0] if names else None
 
 
+def _is_property_getter(node: ast.stmt) -> bool:
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    for dec in node.decorator_list:
+        try:
+            if ast.unparse(dec).strip() == "property":
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+def _property_accessor_kind(node: ast.stmt) -> Optional[str]:
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return None
+    for dec in node.decorator_list:
+        try:
+            dec_str = ast.unparse(dec).strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if dec_str.endswith(".setter"):
+            return "setter"
+        if dec_str.endswith(".deleter"):
+            return "deleter"
+    return None
+
+
+def _class_member_keys(node: ast.stmt) -> list[str]:
+    base_names = _node_symbol_names(node)
+    accessor = _property_accessor_kind(node)
+    if accessor and base_names:
+        return [f"{name}.{accessor}" for name in base_names]
+    return base_names
+
+
 def _raw_imported_bound_names(node: ast.stmt) -> set[str]:
     if isinstance(node, ast.Import):
         return {(a.asname or a.name.split(".")[0]) for a in node.names}
@@ -223,10 +258,15 @@ class ASTPatcher:
         methods_restored = False
         for new_cls in sorted(new_classes, key=lambda c: int(c.end_lineno or c.lineno), reverse=True):
             old_cls = old_classes[new_cls.name]
-            new_member_names = {
-                name
+            new_member_keys = {
+                key
                 for item in new_cls.body
-                for name in _node_symbol_names(item)
+                for key in _class_member_keys(item)
+            }
+            property_getters = {
+                item.name
+                for item in new_cls.body
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and _is_property_getter(item)
             }
             raw_indent = (
                 int(getattr(new_cls.body[0], "col_offset", new_cls.col_offset + 4))
@@ -239,7 +279,11 @@ class ASTPatcher:
             missing_method_snippets: list[str] = []
             for item in old_cls.body:
                 member_names = _node_symbol_names(item)
+                member_keys = _class_member_keys(item)
                 if not member_names:
+                    continue
+                accessor = _property_accessor_kind(item)
+                if accessor and member_names[0] not in property_getters:
                     continue
                 is_protected = any(
                     f"{new_cls.name}.{m_name}" in protected
@@ -249,7 +293,7 @@ class ASTPatcher:
                     )
                     for m_name in member_names
                 )
-                if is_protected and not (set(member_names) & new_member_names):
+                if is_protected and not (set(member_keys) & new_member_keys):
                     m_start, m_end = _node_line_range(item)
                     raw_snippet = "\n".join(old_lines[m_start:m_end]).rstrip()
                     if raw_snippet:
@@ -258,6 +302,8 @@ class ASTPatcher:
                             missing_attr_snippets.append(reindented)
                         else:
                             missing_method_snippets.append(reindented)
+                            if _is_property_getter(item):
+                                property_getters.add(member_names[0])
             if missing_attr_snippets or missing_method_snippets:
                 if missing_method_snippets:
                     insert_idx = int(new_cls.end_lineno or new_cls.lineno)
@@ -396,22 +442,12 @@ class ASTPatcher:
         """Convert invalid root-level or beyond-top-level relative imports to absolute imports."""
         if not rel_path.endswith(".py"):
             return source
-        depth = rel_path.count("/")
-        if depth == 0:
-            return re.sub(
-                r"^(\s*)from\s+\.+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import\s+",
-                r"\1from \2 import ",
-                source,
-                flags=re.MULTILINE,
-            )
-        if depth == 1:
-            return re.sub(
-                r"^(\s*)from\s+\.{2,}([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import\s+",
-                r"\1from \2 import ",
-                source,
-                flags=re.MULTILINE,
-            )
-        return source
+        parts = [p for p in rel_path.replace("\\", "/").split("/")[:-1] if p]
+        if parts and parts[0] in ("src", "tests"):
+            parts = parts[1:]
+        min_invalid_dots = len(parts) + 1
+        pattern = rf"^(\s*)from\s+\.{{{min_invalid_dots},}}([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import\s+"
+        return re.sub(pattern, r"\1from \2 import ", source, flags=re.MULTILINE)
 
     @staticmethod
     def extract_traceback_window(
@@ -427,12 +463,22 @@ class ASTPatcher:
         if filepath:
             basename = filepath.rsplit("/", 1)[-1]
             for pat in (filepath, basename):
-                for match in re.finditer(rf"{re.escape(pat)}['\", )]*?(?:,\s*line\s+|:)(\d+)\b", traceback_text):
+                for match in re.finditer(
+                    rf"(?<![A-Za-z0-9_-]){re.escape(pat)}['\", )]*?(?:,\s*line\s+|:)(\d+)\b",
+                    traceback_text,
+                ):
                     lineno = int(match.group(1))
                     if lineno not in line_numbers:
                         line_numbers.append(lineno)
-        if not line_numbers:
-            for match in re.finditer(r"(?:line\s+|:)(\d+)\b", traceback_text):
+            if not line_numbers and not re.search(
+                r"[A-Za-z0-9_./-]+\.py['\", )]*?(?:,\s*line\s+|:)\d+\b", traceback_text
+            ):
+                for match in re.finditer(r"\bline\s+(\d+)\b", traceback_text):
+                    lineno = int(match.group(1))
+                    if lineno not in line_numbers:
+                        line_numbers.append(lineno)
+        else:
+            for match in re.finditer(r"(?:\bline\s+|[A-Za-z0-9_./-]+\.py:)(\d+)\b", traceback_text):
                 lineno = int(match.group(1))
                 if lineno not in line_numbers:
                     line_numbers.append(lineno)
