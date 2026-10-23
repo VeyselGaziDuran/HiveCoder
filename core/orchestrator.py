@@ -365,9 +365,11 @@ class HiveOrchestrator:
                     if inspector.enable_llm_review and verdict.deterministic_passed:
                         state.metrics.llm_calls += 1
 
+                    override_val = None
                     if not verdict.approved and verdict.deterministic_passed and validator.discover_tests():
                         probe_val = validator.validate(mt.files_written, run_tests=True)
                         if probe_val.passed and probe_val.stage == "pytest":
+                            override_val = probe_val
                             verdict.approved = True
                             verdict.summary = "Deterministic AST & pytest suite passed (LLM false rejection overridden)."
                             self._emit(
@@ -401,7 +403,11 @@ class HiveOrchestrator:
                     else:
                         self._emit("inspection_approved", f"[{mt.id}] InspectorAgent approved {mt.target_file}")
                         self.state_machine.transition(Phase.VALIDATING, f"validating {mt.id}")
-                        val_res = validator.validate(mt.files_written, run_tests=True)
+                        val_res = (
+                            override_val
+                            if override_val is not None
+                            else validator.validate(mt.files_written, run_tests=True)
+                        )
                         gc_rep = self.gc.collect(workspace)
                         state.metrics.gc_items_removed += gc_rep.count
 
@@ -574,9 +580,11 @@ class HiveOrchestrator:
             if inspector.enable_llm_review and verdict.deterministic_passed:
                 state.metrics.llm_calls += 1
 
+            override_val = None
             if not verdict.approved and verdict.deterministic_passed and validator.discover_tests():
                 probe_val = validator.validate(mt.files_written, run_tests=True)
                 if probe_val.passed and probe_val.stage == "pytest":
+                    override_val = probe_val
                     verdict.approved = True
                     verdict.summary = "Deterministic AST & pytest suite passed after medic (LLM false rejection overridden)."
                     self._emit(
@@ -594,7 +602,11 @@ class HiveOrchestrator:
                 continue
 
             self.state_machine.transition(Phase.VALIDATING, f"re-validating {mt.id} after medic")
-            val_res = validator.validate(mt.files_written, run_tests=True)
+            val_res = (
+                override_val
+                if override_val is not None
+                else validator.validate(mt.files_written, run_tests=True)
+            )
             gc_rep = self.gc.collect(workspace)
             state.metrics.gc_items_removed += gc_rep.count
 

@@ -61,6 +61,8 @@ class InspectorAgent(BaseAgent):
     def inspect(self, task: MicroTask, files_written: Optional[list[str]] = None) -> InspectionVerdict:
         """Run deterministic AST/Blackboard checks first, then optional LLM review."""
         targets = list(files_written or task.files_written or [task.target_file])
+        if task.target_file and task.target_file not in targets:
+            targets.insert(0, task.target_file)
         deterministic_issues: list[str] = []
 
         for rel in targets:

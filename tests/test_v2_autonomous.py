@@ -1541,6 +1541,79 @@ def test_cycle_25_property_setter_preservation_src_relative_imports_and_tracebac
     )
 
 
+def test_cycle_26_mandatory_target_file_inspection_and_single_validation_on_override(tmp_path: Path) -> None:
+    """Verify InspectorAgent always checks task.target_file even with multi-file output, and inspection_override does not run pytest twice."""
+    from agents.inspector_agent import InspectorAgent
+    from core.context_builder import ContextBuilder
+    from core.orchestrator import HiveOrchestrator
+    from core.state_machine import MicroTask
+    from core.validator import Validator
+
+    ws = tmp_path / "cycle26_ws"
+    ws.mkdir()
+    (ws / "helper_a.py").write_text("A = 1\n", encoding="utf-8")
+    (ws / "helper_b.py").write_text("B = 2\n", encoding="utf-8")
+    bb = Blackboard(tmp_path / "cycle26_mem", workspace=ws)
+    bb.scan_workspace()
+    ctx = ContextBuilder(bb, ws)
+    inspector = InspectorAgent(
+        LLMClient({"provider": "ollama"}),
+        bb,
+        ctx,
+        ws,
+        enable_llm_review=False,
+    )
+    mt = MicroTask(
+        id="step-1",
+        title="Build service.py",
+        target_file="service.py",
+        files_written=["helper_a.py", "helper_b.py"],
+        relay_note="Wrote helpers.",
+    )
+    verdict = inspector.inspect(mt, ["helper_a.py", "helper_b.py"])
+    assert verdict.approved is False
+    assert any("service.py: file was not created" in issue for issue in verdict.issues)
+
+    # Verify inspection_override reuses probe_val rather than running Validator.validate twice per step
+    validate_calls: list[list[str]] = []
+    orig_validate = Validator.validate
+
+    def counting_validate(self: Validator, files: list[str], run_tests: bool = True):
+        validate_calls.append(list(files))
+        return orig_validate(self, files, run_tests=run_tests)
+
+    run_ws = tmp_path / "cycle26_run_ws"
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["memory_dir"] = str(tmp_path / "cycle26_run_mem")
+    cfg["default_workspace"] = str(run_ws)
+    cfg["agents"]["llm_inspector"] = True
+    cfg["thermal"]["profile"] = "turbo"
+
+    plan_json = json.dumps(
+        {
+            "micro_tasks": [
+                {"id": "step-1", "title": "Create tests/test_app.py", "target_file": "tests/test_app.py", "kind": "test"}
+            ]
+        }
+    )
+    tester_reply = (
+        "<<<FILE_PATH>>>\ntests/test_app.py\n<<<END_FILE_PATH>>>\n"
+        "<<<CODE>>>\ndef test_ok() -> None:\n    assert 2 + 2 == 4\n<<<END_CODE>>>\n"
+        "<<<RELAY_NOTE>>>\ntest_ok ready.\n<<<END_RELAY_NOTE>>>"
+    )
+    inspector_false_reject = '{"approved": false, "issues": ["Subjective style nitpick"], "summary": "Nitpick"}'
+    llm = TempTrackingLLMClient(cfg, [plan_json, tester_reply, inspector_false_reject])
+    orch = HiveOrchestrator(config=cfg, llm_client=llm)
+    Validator.validate = counting_validate  # type: ignore[method-assign]
+    try:
+        state = orch.run_task("Create test_app.py", workspace=run_ws)
+    finally:
+        Validator.validate = orig_validate  # type: ignore[method-assign]
+
+    assert state.phase.value == "completed"
+    assert len(validate_calls) == 1
+
+
 
 
 
