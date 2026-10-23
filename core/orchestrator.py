@@ -264,6 +264,18 @@ class HiveOrchestrator:
         if interrupted:
             self.blackboard.scan_workspace(agent="post_rollback_scan")
 
+        done_files: list[str] = []
+        for mt in state.micro_tasks:
+            if mt.status == "done":
+                for rel in mt.files_written or [mt.target_file]:
+                    if rel and rel not in done_files:
+                        done_files.append(rel)
+        self.blackboard.verified_symbols.clear()
+        if done_files:
+            self.blackboard.lock_verified_symbols(done_files)
+        else:
+            self.blackboard.save()
+
         # Purge any relay notes left by interrupted/unverified micro-tasks
         purged = self.memory_lifecycle.purge_unverified_notes(
             self.blackboard,

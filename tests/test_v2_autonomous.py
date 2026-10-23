@@ -1614,6 +1614,71 @@ def test_cycle_26_mandatory_target_file_inspection_and_single_validation_on_over
     assert len(validate_calls) == 1
 
 
+def test_cycle_27_resume_resyncs_verified_symbols_from_completed_tasks(tmp_path: Path) -> None:
+    """Verify resume_task rebuilds blackboard.verified_symbols from completed micro-tasks even if blackboard.json was wiped."""
+    from core.orchestrator import HiveOrchestrator
+    from core.state_machine import MicroTask, Phase, StateMachine
+
+    ws = tmp_path / "cycle27_ws"
+    ws.mkdir()
+    mem = tmp_path / "cycle27_mem"
+    mem.mkdir()
+
+    # Step 1 already completed and created core_service.py on disk
+    (ws / "core_service.py").write_text(
+        "def verified_helper() -> int:\n    return 42\n",
+        encoding="utf-8",
+    )
+
+    sm = StateMachine(mem / "state.json")
+    st = sm.new_task(goal="Build core_service and extend it", workspace=ws)
+    st.phase = Phase.PAUSED
+    st.micro_tasks = [
+        MicroTask(
+            id="step-1",
+            title="Create core_service.py",
+            target_file="core_service.py",
+            kind="code",
+            status="done",
+            files_written=["core_service.py"],
+            relay_note="Created verified_helper.",
+            inspected=True,
+            validated=True,
+        ),
+        MicroTask(
+            id="step-2",
+            title="Extend core_service.py and add test",
+            target_file="core_service.py",
+            kind="code",
+            status="pending",
+            depends_on=["step-1"],
+        ),
+    ]
+    sm.save()
+
+    # Simulate wiped/missing blackboard.json before resume; step-2 overwrites core_service.py without verified_helper
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["memory_dir"] = str(mem)
+    cfg["default_workspace"] = str(ws)
+    cfg["agents"]["llm_inspector"] = False
+    cfg["thermal"]["profile"] = "turbo"
+
+    step2_reply = (
+        "<<<FILE_PATH>>>\ncore_service.py\n<<<END_FILE_PATH>>>\n"
+        "<<<CODE>>>\ndef second_feature() -> int:\n    return 100\n<<<END_CODE>>>\n"
+        "<<<RELAY_NOTE>>>\nAdded second_feature.\n<<<END_RELAY_NOTE>>>"
+    )
+    llm = TempTrackingLLMClient(cfg, [step2_reply])
+    orch = HiveOrchestrator(config=cfg, llm_client=llm)
+    resumed_state = orch.resume_task()
+
+    assert resumed_state.phase == Phase.COMPLETED
+    final_code = (ws / "core_service.py").read_text(encoding="utf-8")
+    assert "def verified_helper" in final_code
+    assert "def second_feature" in final_code
+
+
+
 
 
 
